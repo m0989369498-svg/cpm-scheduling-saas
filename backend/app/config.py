@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     # --- 地區 (台灣 TW / 中國大陸 CN) ---
     default_region: str = "TW"
 
+    # --- JWT 認證 (功能旗標；預設關閉以維持既有 header 模式相容) ---
+    # jwt_secret：HS256 簽章密鑰 (正式環境務必由 JWT_SECRET 覆寫)。
+    jwt_secret: str = "dev-secret-change-me"          # env JWT_SECRET
+    jwt_algorithm: str = "HS256"                      # env JWT_ALGORITHM
+    jwt_expire_minutes: int = 720                     # env JWT_EXPIRE_MINUTES
+    # auth_required：True => 端點必須帶 Bearer token；False (預設) => 允許 header 模式。
+    auth_required: bool = False                       # env AUTH_REQUIRED
+    # dev_bootstrap：在「非 sqlite」DB 上也強制 create_all + 種子 (預設關閉)。
+    dev_bootstrap: bool = False                       # env DEV_BOOTSTRAP
+
     # --- 通知 (選填；空值代表 no-op / 僅記錄日誌) ---
     line_channel_access_token: str = ""  # LINE 推播 (台灣)
     dingtalk_webhook_url: str = ""       # 釘釘 webhook (中國大陸)
@@ -58,3 +68,12 @@ class Settings(BaseSettings):
 
 # 單例：整個應用共用同一份設定
 settings = Settings()
+
+
+def is_sqlite() -> bool:
+    """目前 DATABASE_URL 是否指向 sqlite (dev 原生模式)。
+
+    sqlite 沒有 RLS / schema / set_config，故多處 (engine 設定、set_tenant_guc、
+    啟動 create_all+seed) 皆以此判斷切換行為。
+    """
+    return (settings.database_url or "").lower().startswith("sqlite")

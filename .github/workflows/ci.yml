@@ -128,14 +128,15 @@ jobs:
         run: docker compose up -d --build
 
       - name: Wait for backend (via gateway)
+        # compose sets AUTH_REQUIRED=true, so /api/v1/projects now 401s without a
+        # Bearer token. Use the unauthenticated /health probe as the readiness gate.
         run: |
           set -euo pipefail
           echo "::group::Waiting for gateway -> backend to become ready"
           ready=""
           for i in $(seq 1 60); do
             code=$(curl -o /dev/null -s -w "%{http_code}" \
-              -H "X-Tenant-Id: TENT-9981" \
-              http://localhost:8080/api/v1/projects || true)
+              http://localhost:8080/health || true)
             echo "attempt ${i}: HTTP ${code}"
             if [ "${code}" = "200" ]; then
               ready="yes"
@@ -150,14 +151,51 @@ jobs:
           fi
           echo "OK: backend is reachable through the gateway"
 
-      - name: Smoke test through the real stack (with RLS isolation)
+      - name: Smoke test through the real stack (JWT auth + RLS isolation)
         run: |
           set -euo pipefail
 
-          echo "::group::(a) Create project PRJ-E2E as TENT-9981 -> expect 200"
+          echo "::group::(0) Login as admin@tw -> get Bearer token (AUTH_REQUIRED=true)"
+          login_code=$(curl -o /tmp/login_tw.json -s -w "%{http_code}" \
+            -X POST http://localhost:8080/api/v1/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username": "admin@tw", "password": "demo1234"}')
+          echo "login HTTP ${login_code}"
+          cat /tmp/login_tw.json || true
+          echo ""
+          if [ "${login_code}" != "200" ]; then
+            echo "ERROR: login expected 200, got ${login_code}"
+            exit 1
+          fi
+          TW_TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/login_tw.json'))['access_token'])")
+          TW_TENANT=$(python3 -c "import json;print(json.load(open('/tmp/login_tw.json'))['tenant_id'])")
+          if [ -z "${TW_TOKEN}" ]; then
+            echo "ERROR: no access_token in login response"
+            exit 1
+          fi
+          if [ "${TW_TENANT}" != "TENT-9981" ]; then
+            echo "ERROR: expected tenant_id TENT-9981, got ${TW_TENANT}"
+            exit 1
+          fi
+          echo "OK: obtained Bearer token for ${TW_TENANT}"
+          echo "::endgroup::"
+
+          echo "::group::(0b) No Authorization header -> expect 401 (auth enforced)"
+          noauth_code=$(curl -o /dev/null -s -w "%{http_code}" \
+            http://localhost:8080/api/v1/projects)
+          echo "no-auth GET HTTP ${noauth_code}"
+          if [ "${noauth_code}" != "401" ]; then
+            echo "ERROR: unauthenticated request expected 401, got ${noauth_code}"
+            echo "AUTH_REQUIRED is NOT enforced end-to-end!"
+            exit 1
+          fi
+          echo "OK: unauthenticated request rejected (401)"
+          echo "::endgroup::"
+
+          echo "::group::(a) Create project PRJ-E2E as admin@tw -> expect 200"
           create_code=$(curl -o /tmp/create.json -s -w "%{http_code}" \
             -X POST http://localhost:8080/api/v1/projects \
-            -H "X-Tenant-Id: TENT-9981" \
+            -H "Authorization: Bearer ${TW_TOKEN}" \
             -H "Content-Type: application/json" \
             -d '{
                   "project_id": "PRJ-E2E",
@@ -178,9 +216,9 @@ jobs:
           fi
           echo "::endgroup::"
 
-          echo "::group::(b) GET PRJ-E2E as owner TENT-9981 -> expect 200"
+          echo "::group::(b) GET PRJ-E2E as owner admin@tw -> expect 200"
           get_owner_code=$(curl -o /tmp/get_owner.json -s -w "%{http_code}" \
-            -H "X-Tenant-Id: TENT-9981" \
+            -H "Authorization: Bearer ${TW_TOKEN}" \
             http://localhost:8080/api/v1/projects/PRJ-E2E)
           echo "owner GET HTTP ${get_owner_code}"
           if [ "${get_owner_code}" != "200" ]; then
@@ -189,17 +227,28 @@ jobs:
           fi
           echo "::endgroup::"
 
-          echo "::group::(c) GET PRJ-E2E as TENT-OUTSIDER -> expect 404 (RLS isolation)"
+          echo "::group::(c) GET PRJ-E2E as admin@cn (TENT-CN-002) -> expect 404 (RLS isolation)"
+          cn_login_code=$(curl -o /tmp/login_cn.json -s -w "%{http_code}" \
+            -X POST http://localhost:8080/api/v1/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username": "admin@cn", "password": "demo1234"}')
+          echo "cn login HTTP ${cn_login_code}"
+          if [ "${cn_login_code}" != "200" ]; then
+            echo "ERROR: admin@cn login expected 200, got ${cn_login_code}"
+            cat /tmp/login_cn.json || true
+            exit 1
+          fi
+          CN_TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/login_cn.json'))['access_token'])")
           get_outsider_code=$(curl -o /tmp/get_outsider.json -s -w "%{http_code}" \
-            -H "X-Tenant-Id: TENT-OUTSIDER" \
+            -H "Authorization: Bearer ${CN_TOKEN}" \
             http://localhost:8080/api/v1/projects/PRJ-E2E)
-          echo "outsider GET HTTP ${get_outsider_code}"
+          echo "outsider (admin@cn) GET HTTP ${get_outsider_code}"
           if [ "${get_outsider_code}" != "404" ]; then
             echo "ERROR: cross-tenant read expected 404 (RLS), got ${get_outsider_code}"
             echo "RLS isolation is NOT enforced end-to-end!"
             exit 1
           fi
-          echo "OK: RLS isolation enforced end-to-end (outsider got 404)"
+          echo "OK: RLS isolation enforced end-to-end (admin@cn got 404 for a TW project)"
           echo "::endgroup::"
 
           echo "::group::(d) Assert worker container is running"

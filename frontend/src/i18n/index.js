@@ -46,6 +46,15 @@ export const I18N = {
     invalidDuration: '工期須為大於或等於 0 的整數',
     taskIdRequired: '每個任務皆須填寫任務編號',
     none: '無',
+    // ---- 登入 / 認證 ----
+    login: '登入',
+    logout: '登出',
+    username: '帳號',
+    password: '密碼',
+    signIn: '登入',
+    loginFailed: '登入失敗，請檢查帳號或密碼',
+    demoAccounts: '示範帳號',
+    loggedInAs: '已登入',
     statuses: {
       PENDING: '待辦',
       IN_PROGRESS: '進行中',
@@ -97,6 +106,15 @@ export const I18N = {
     invalidDuration: '工期须为大于或等于 0 的整数',
     taskIdRequired: '每个任务都须填写任务编号',
     none: '无',
+    // ---- 登录 / 认证 ----
+    login: '登录',
+    logout: '登出',
+    username: '账号',
+    password: '密码',
+    signIn: '登录',
+    loginFailed: '登录失败，请检查账号或密码',
+    demoAccounts: '演示账号',
+    loggedInAs: '已登录',
     statuses: {
       PENDING: '待办',
       IN_PROGRESS: '进行中',

@@ -70,7 +70,7 @@ async def sync_erp(
     回傳 {enqueued: N, event_ids: [...]}，由背景 worker 後續處理。
     若任務尚無 ERP 對應，會即時建立 task_mapping。
     """
-    project = await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     tasks = await _load_tasks(db, project_id)
 
     event_ids: list[str] = []

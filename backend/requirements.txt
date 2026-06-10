@@ -6,6 +6,8 @@ pydantic>=2
 pydantic-settings
 redis>=5
 apscheduler
+pyjwt
+passlib
 reportlab
 httpx
 python-multipart

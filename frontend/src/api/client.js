@@ -4,9 +4,10 @@ import axios from 'axios'
 // 生產環境經 gateway 反向代理，預設 '/api/v1'。
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
 
-// localStorage 鍵（與 store 共用），作為攔截器讀取租戶/區域的回退來源。
+// localStorage 鍵（與 store 共用），作為攔截器讀取租戶/區域/權杖的回退來源。
 const LS_TENANT_KEY = 'cpm.tenantId'
 const LS_REGION_KEY = 'cpm.region'
+const LS_TOKEN_KEY = 'cpm.token'
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -14,10 +15,12 @@ export const apiClient = axios.create({
 })
 
 // 請求攔截器：從 zustand store（若已掛載）或 localStorage 注入
-// X-Tenant-Id 與 X-Region。store 為單一真實來源，localStorage 為回退。
+// X-Tenant-Id、X-Region 與 Authorization。store 為單一真實來源，localStorage 為回退。
+// 後端規則：若帶 Bearer 權杖則優先採用其租戶/區域；否則回退標頭模式。
 apiClient.interceptors.request.use((config) => {
   let tenantId = null
   let region = null
+  let token = null
 
   // 動態取得 store，避免與 store 模組相互循環匯入。
   try {
@@ -27,6 +30,7 @@ apiClient.interceptors.request.use((config) => {
       const st = mod.getState()
       tenantId = st.tenantId
       region = st.region
+      token = st.token
     }
   } catch (e) {
     // 忽略：改用 localStorage 回退
@@ -38,14 +42,33 @@ apiClient.interceptors.request.use((config) => {
   if (!region) {
     region = (typeof localStorage !== 'undefined' && localStorage.getItem(LS_REGION_KEY)) || 'TW'
   }
+  if (!token) {
+    token = (typeof localStorage !== 'undefined' && localStorage.getItem(LS_TOKEN_KEY)) || null
+  }
 
   config.headers = config.headers || {}
   config.headers['X-Tenant-Id'] = tenantId
   config.headers['X-Region'] = region
+  // 帶上 Bearer 權杖（若存在）；後端 Bearer 優先於標頭。
+  if (token) {
+    config.headers['Authorization'] = `Bearer ${token}`
+  }
   return config
 })
 
 // ---- 匯出 API 函式（每個皆回傳 response.data） ----
+
+// 登入：以帳號/密碼換取 JWT 權杖。回傳 {access_token, token_type, tenant_id, region}。
+export async function login(username, password) {
+  const res = await apiClient.post('/auth/login', { username, password })
+  return res.data
+}
+
+// 取得目前登入身分（依 Bearer 權杖解析）。回傳 {username, tenant_id, region}。
+export async function me() {
+  const res = await apiClient.get('/auth/me')
+  return res.data
+}
 
 // 無狀態 CPM 計算（不落地 DB）
 export async function calculateSchedule(tasks) {

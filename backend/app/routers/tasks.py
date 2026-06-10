@@ -89,7 +89,7 @@ async def list_tasks(
     db: AsyncSession = Depends(get_db),
 ) -> list[TaskResult]:
     """列出專案任務（含 CPM 結果）。"""
-    await _get_project_or_404(db, project_id)
+    await _get_project_or_404(db, project_id, ctx.tenant_id)
     tasks = await _load_tasks(db, project_id)
     deps = await _load_dependencies(db, project_id)
 
@@ -145,7 +145,7 @@ async def add_task(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectOut:
     """新增任務後重算整個專案 CPM。"""
-    project = await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
 
     # 同專案內 task_id 不可重複
     existing = await db.execute(
@@ -189,7 +189,7 @@ async def update_task(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectOut:
     """部分更新任務（名稱 / 工期 / 狀態 / 前置任務）後重算 CPM。"""
-    project = await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     task = await _get_task_or_404(db, project_id, task_id)
 
     if payload.task_name is not None:
@@ -217,7 +217,7 @@ async def update_task_duration(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectOut:
     """拖曳改工期路徑：更新工期後重算整個專案 CPM 並回傳最新 ProjectOut。"""
-    project = await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     task = await _get_task_or_404(db, project_id, task_id)
 
     task.duration = payload.duration
@@ -234,7 +234,7 @@ async def delete_task(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectOut:
     """刪除任務及其相依（含其他任務以它為前置者）後重算 CPM。"""
-    project = await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     task = await _get_task_or_404(db, project_id, task_id)
 
     # 刪除以此任務為「自身」或「前置」的相依關係

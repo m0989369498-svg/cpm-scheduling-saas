@@ -42,9 +42,20 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 # ---------------------------------------------------------------------------
 # 內部工具：載入 / 組裝 / 回寫
 # ---------------------------------------------------------------------------
-async def _get_project_or_404(db: AsyncSession, project_id: str) -> Project:
-    """取得專案 ORM 物件，找不到回 404（RLS 已限制 tenant 範圍）。"""
-    result = await db.execute(select(Project).where(Project.project_id == project_id))
+async def _get_project_or_404(
+    db: AsyncSession, project_id: str, tenant_id: str | None = None
+) -> Project:
+    """取得專案 ORM 物件，找不到回 404。
+
+    租戶範圍：在 PostgreSQL 由 RLS (app.current_tenant) 強制隔離；在 sqlite
+    (dev 原生模式，無 RLS) 則改以「應用層查詢條件」隔離 —— 故當呼叫端提供
+    tenant_id 時，明確加上 ``Project.tenant_id == tenant_id``，確保兩種後端
+    皆只回傳當前租戶的專案 (避免 sqlite 下跨租戶讀取)。
+    """
+    stmt = select(Project).where(Project.project_id == project_id)
+    if tenant_id is not None:
+        stmt = stmt.where(Project.tenant_id == tenant_id)
+    result = await db.execute(stmt)
     project = result.scalar_one_or_none()
     if project is None:
         raise HTTPException(
@@ -219,8 +230,18 @@ async def list_projects(
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
 ) -> list[ProjectSummary]:
-    """列出（當前 tenant 可見的）所有專案摘要。"""
-    result = await db.execute(select(Project).order_by(Project.created_at))
+    """列出（當前 tenant 可見的）所有專案摘要。
+
+    租戶隔離：PostgreSQL 由 RLS 處理；sqlite (無 RLS) 改以查詢條件
+    ``Project.tenant_id == ctx.tenant_id`` 隔離，確保兩種後端皆只列出當前
+    租戶的專案 (避免 sqlite dev 模式下跨租戶外洩)。明確過濾於 PostgreSQL 為
+    冗餘但無害 (與 RLS 結果一致)。
+    """
+    result = await db.execute(
+        select(Project)
+        .where(Project.tenant_id == ctx.tenant_id)
+        .order_by(Project.created_at)
+    )
     projects = list(result.scalars().all())
 
     summaries: list[ProjectSummary] = []
@@ -302,7 +323,7 @@ async def get_project(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectOut:
     """載入專案 DAG 並回傳快取的 CPM 結果；若缺值則重算。"""
-    project = await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     tasks = await _load_tasks(db, project_id)
     deps = await _load_dependencies(db, project_id)
 
@@ -335,7 +356,7 @@ async def update_project(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectOut:
     """更新專案中繼資料（名稱 / 區域）。"""
-    project = await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     project.project_name = payload.project_name
     project.region = payload.region or project.region
     await db.flush()
@@ -351,7 +372,7 @@ async def delete_project(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """刪除專案（任務經 ON DELETE CASCADE 連帶刪除；相依手動清理）。"""
-    project = await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
 
     await db.execute(
         sa_delete(TaskDependency).where(TaskDependency.project_id == project_id)
@@ -368,7 +389,7 @@ async def project_report(
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """產生工期 PDF 報表（StreamingResponse, application/pdf）。"""
-    project = await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     project_out = await get_project(project_id, ctx=ctx, db=db)
 
     pdf_bytes = reports.generate_schedule_pdf(project_out, project.region)

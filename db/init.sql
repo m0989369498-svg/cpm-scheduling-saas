@@ -210,6 +210,60 @@ INSERT INTO erp_integration.tenant_erp_config (tenant_id, erp_type, api_endpoint
 VALUES ('TENT-9981', 'DINGXIN_TW', '', TRUE)
 ON CONFLICT (tenant_id) DO NOTHING;
 
+-- -----------------------------------------------------------------------------
+-- 4.6 第二租戶 (中國大陸 CN)：TENT-CN-002 / PRJ-2026-CN-001 / C-01..C-02
+--     供雙區域 (TW/CN) 示範與 dev sqlite 種子對齊。ERP 採用友 YONYOU_CN。
+--       C-01 (土方开挖, 4d, 無前置, COMPLETED)  es0 ef4  ls0 lf4  float0 critical
+--       C-02 (基础施工, 6d, 前置 C-01, IN_PROGRESS) es4 ef10 ls4 lf10 float0 critical
+-- -----------------------------------------------------------------------------
+INSERT INTO public.tenants (tenant_id, name, region)
+VALUES ('TENT-CN-002', '示范建筑工程公司', 'CN')
+ON CONFLICT (tenant_id) DO NOTHING;
+
+INSERT INTO public.projects (project_id, tenant_id, project_name, region)
+VALUES ('PRJ-2026-CN-001', 'TENT-CN-002', '2026 示范建筑工程排程', 'CN')
+ON CONFLICT (project_id) DO NOTHING;
+
+INSERT INTO public.tasks
+    (project_id, tenant_id, task_id, task_name, duration, status,
+     es, ef, ls, lf, float_time, is_critical)
+VALUES
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'C-01', '土方开挖', 4, 'COMPLETED',
+        0,  4,  0,  4, 0, TRUE),
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'C-02', '基础施工', 6, 'IN_PROGRESS',
+        4, 10,  4, 10, 0, TRUE)
+ON CONFLICT (project_id, task_id) DO NOTHING;
+
+INSERT INTO public.task_dependencies
+    (project_id, tenant_id, task_id, predecessor_task_id)
+VALUES
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'C-02', 'C-01')
+ON CONFLICT (project_id, task_id, predecessor_task_id) DO NOTHING;
+
+INSERT INTO erp_integration.tenant_erp_config (tenant_id, erp_type, api_endpoint, is_active)
+VALUES ('TENT-CN-002', 'YONYOU_CN', '', TRUE)
+ON CONFLICT (tenant_id) DO NOTHING;
+
+-- =============================================================================
+-- 4.7 應用登入帳號表 app_users (public schema，「不」啟用 RLS)
+-- -----------------------------------------------------------------------------
+-- 登入 (POST /auth/login) 在尚未建立 tenant 情境前依 username 查此表，故此表
+-- 必須「不受 RLS 保護」(否則 app.current_tenant 未設定時查詢會被過濾為空)。
+-- 本表「不」在此種任何資料列：帳號由應用啟動時以 passlib 雜湊冪等種入
+-- (避免在 SQL 中寫死預雜湊密碼)。此表置於 GRANT 區塊之前，方能被
+-- 「GRANT ON ALL TABLES IN SCHEMA public」一併涵蓋。
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS public.app_users (
+    id             BIGSERIAL    PRIMARY KEY,
+    tenant_id      VARCHAR(50)  NOT NULL REFERENCES public.tenants(tenant_id),
+    username       VARCHAR(150) NOT NULL UNIQUE,           -- 登入帳號 (全域唯一)
+    password_hash  VARCHAR(255) NOT NULL,                  -- passlib pbkdf2_sha256
+    region         VARCHAR(20)  NOT NULL DEFAULT 'TW',     -- 區域 (TW / CN)
+    is_active      BOOLEAN      DEFAULT TRUE,
+    created_at     TIMESTAMPTZ  DEFAULT now()
+);
+-- 注意：刻意「不」對 app_users ENABLE ROW LEVEL SECURITY。
+
 -- =============================================================================
 -- 5. 應用程式連線角色 cpm_app (NON-SUPERUSER) — RLS 真正生效的關鍵
 -- -----------------------------------------------------------------------------

@@ -61,10 +61,17 @@ services:
       API_V1_PREFIX: /api/v1
       CORS_ORIGINS: http://localhost:5173,http://localhost:8080
       DEFAULT_REGION: TW
+      # --- JWT 認證 (生產/compose 強制啟用 Bearer Token) ---
+      AUTH_REQUIRED: "true"
+      JWT_SECRET: change-me-in-prod
+      JWT_EXPIRE_MINUTES: "720"
       LINE_CHANNEL_ACCESS_TOKEN: ""
       DINGTALK_WEBHOOK_URL: ""
       ERP_SCAN_INTERVAL_SECONDS: "300"
       ERP_MAX_RETRIES: "5"
+    # 對外開放 8000 供 Swagger / OpenAPI 文件 (http://localhost:8000/docs)
+    ports:
+      - "8000:8000"
     expose:
       - "8000"
     depends_on:
@@ -93,6 +100,10 @@ services:
       API_V1_PREFIX: /api/v1
       CORS_ORIGINS: http://localhost:5173,http://localhost:8080
       DEFAULT_REGION: TW
+      # --- JWT 認證 (與 backend 共用同一把 secret) ---
+      AUTH_REQUIRED: "true"
+      JWT_SECRET: change-me-in-prod
+      JWT_EXPIRE_MINUTES: "720"
       LINE_CHANNEL_ACCESS_TOKEN: ""
       DINGTALK_WEBHOOK_URL: ""
       ERP_SCAN_INTERVAL_SECONDS: "300"

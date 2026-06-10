@@ -463,3 +463,158 @@ tr.critical-row td {
   color: var(--color-muted);
   font-size: 12px;
 }
+
+/* ---- 登入頁 / 登入卡片 ---- */
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--color-bg);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  padding: 28px 26px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.login-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-text);
+  text-align: center;
+}
+
+.login-subtitle {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-muted);
+  text-align: center;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.login-field label {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.login-field input {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  background: #fff;
+  color: var(--color-text);
+}
+
+.login-field input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px rgba(44, 123, 229, 0.18);
+}
+
+.login-submit {
+  width: 100%;
+  padding: 10px 14px;
+  margin-top: 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.login-error {
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: #fadbd8;
+  color: var(--color-critical);
+  font-size: 13px;
+}
+
+.login-hint {
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--color-border);
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.login-hint-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.login-hint-line {
+  font-family: 'Consolas', 'Menlo', monospace;
+  color: var(--color-text);
+}
+
+/* ---- 已登入：頂部使用者列 ---- */
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 24px;
+  background: var(--color-panel);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-header-user {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--color-muted);
+}
+
+.app-header-label {
+  font-size: 12px;
+}
+
+.app-header-username {
+  font-size: 14px;
+  color: var(--color-text);
+}
+
+.app-header-tenant {
+  font-size: 12px;
+  background: #eef3f9;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 2px 10px;
+  color: var(--color-text);
+}
+
+.app-header-logout {
+  background: #fff;
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent);
+}
+
+.app-header-logout:hover {
+  background: var(--color-accent);
+  color: #fff;
+  opacity: 1;
+}

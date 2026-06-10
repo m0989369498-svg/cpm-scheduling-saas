@@ -1,0 +1,48 @@
+# =============================================================================
+# 本機 SQLite Dev Mode 依賴 (LOCAL DEV — NO Docker / NO PostgreSQL)
+# -----------------------------------------------------------------------------
+# 用途：在「不裝 Docker、不裝 Postgres」的開發機 (尤其是 Windows-ARM64，
+#       asyncpg / uvicorn[standard] 缺 ARM64 wheel) 上，以純 Python 套件直接
+#       跑完整 App，後端走 sqlite (aiosqlite)。
+#
+# 與 requirements.txt 的差異：
+#   - 不含 asyncpg            (改用 aiosqlite；DATABASE_URL=sqlite+aiosqlite://...)
+#   - uvicorn 用「純版」       (非 uvicorn[standard]，避免編譯 httptools/uvloop)
+#   全部為 pure-python 或具 ARM64 wheel，pip install 即可，無需編譯工具鏈。
+#
+# 快速開始 (2 步)：
+#   pip install -r requirements-dev.txt
+#   python run_dev.py            # -> http://localhost:8000/docs
+# =============================================================================
+
+# --- Web 框架 / ASGI server (純 uvicorn，不帶 C 擴充) ---
+fastapi
+uvicorn
+
+# --- 資料庫 (async SQLAlchemy + sqlite driver) ---
+sqlalchemy[asyncio]>=2
+aiosqlite
+
+# --- 設定 / 驗證 ---
+pydantic>=2
+pydantic-settings
+
+# --- 快取 / 佇列 / 排程 ---
+redis>=5
+apscheduler
+
+# --- 報表 / HTTP client ---
+reportlab
+httpx
+
+# --- 表單 (multipart) ---
+python-multipart
+
+# --- 認證 (JWT + 密碼雜湊；皆為 pure-python，ARM64 可直接安裝) ---
+pyjwt
+passlib
+
+# --- 測試 ---
+pytest
+pytest-asyncio
+anyio

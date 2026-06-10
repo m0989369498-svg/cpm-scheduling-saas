@@ -99,6 +99,99 @@ A demo tenant **`TENT-9981`** (region `TW`) and demo project **`PRJ-2026-TW-001`
 
 The frontend defaults its tenant to `TENT-9981` / region `TW`, so the board is populated on first load.
 
+> **Backend `:8000` is now published by compose** (not just `expose`d), so the Swagger UI at
+> <http://localhost:8000/docs> is reachable directly from the host while the gateway still
+> serves the app on `:8080`.
+
+---
+
+## 4a. 本機免 Docker 試用 (SQLite dev mode)
+
+不想安裝 Docker / PostgreSQL？可用內建的 **SQLite dev mode** 直接在本機跑完整後端
+(特別適合 **Windows-ARM64**，因 `asyncpg` / `uvicorn[standard]` 在該平台缺 wheel)。
+當 `DATABASE_URL` 以 `sqlite` 開頭時，App 啟動會自動 **建表 + 寫入種子資料 (兩個租戶、
+範例專案、demo 帳號)**，並關閉 RLS GUC（SQLite 無 RLS）。
+
+**Backend (sqlite)** — 於 `backend/` 目錄下，使用純 Python 套件 `requirements-dev.txt`
+(已排除 `asyncpg` 與 `uvicorn[standard]`，全部可在 ARM64 直接 `pip install`)：
+
+```bash
+cd backend
+python -m venv .venv
+# Windows:
+.venv\Scripts\pip install -r requirements-dev.txt
+.venv\Scripts\python run_dev.py
+# macOS / Linux:
+# .venv/bin/pip install -r requirements-dev.txt
+# .venv/bin/python run_dev.py
+```
+
+`run_dev.py` 會在匯入 App 前以 `os.environ.setdefault` 設好 dev 預設值
+(`DATABASE_URL=sqlite+aiosqlite:///./cpm_dev.db`、`DEV_BOOTSTRAP=true`、
+`AUTH_REQUIRED=false`)，然後在 `:8000` 啟動 uvicorn。接著開啟：
+
+| URL | What |
+|-----|------|
+| <http://localhost:8000/docs>   | Backend **Swagger / OpenAPI** docs |
+| <http://localhost:8000/health> | Health probe |
+
+**Frontend** — 另開終端機，讓前端指向本機後端的 `/api/v1`：
+
+```bash
+cd frontend
+npm install
+VITE_API_BASE_URL=http://localhost:8000/api/v1 npm run dev
+```
+
+Vite dev server 於 <http://localhost:5173>。預設租戶 `TENT-9981` / `TW`，首屏即有資料。
+
+> SQLite 檔案預設為 `backend/cpm_dev.db`，刪除後重新啟動即可重建並重新種子。
+
+---
+
+## 4b. 登入 / Auth (JWT)
+
+系統內建 **JWT Bearer Token** 認證，並以 `AUTH_REQUIRED` 旗標控管，預設 **關閉**
+以維持既有 header 模式 (僅憑 `X-Tenant-Id` 標頭) 的相容性。
+
+**Demo 帳號** (密碼皆為 `demo1234`，由 App 啟動時以 passlib 種子建立)：
+
+| Username  | Tenant       | Region |
+|-----------|--------------|--------|
+| `admin@tw` | `TENT-9981`   | `TW`   |
+| `admin@cn` | `TENT-CN-002` | `CN`   |
+
+**取得 token** — `POST {API_V1_PREFIX}/auth/login`：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin@tw","password":"demo1234"}'
+# -> {"access_token":"<JWT>","token_type":"bearer","tenant_id":"TENT-9981","region":"TW"}
+```
+
+**使用 token** — 之後的 `/api/v1/...` 請求帶上 `Authorization: Bearer <token>`，
+租戶與區域由 token claims (`tenant_id`, `region`) 解析，**無需** 再帶 `X-Tenant-Id` / `X-Region`：
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin@tw","password":"demo1234"}' | python -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+
+curl http://localhost:8000/api/v1/projects -H "Authorization: Bearer ${TOKEN}"
+curl http://localhost:8000/api/v1/auth/me  -H "Authorization: Bearer ${TOKEN}"
+```
+
+**`AUTH_REQUIRED` 行為**
+
+| 值 | 模式 | 行為 |
+|----|------|------|
+| `false` (預設, dev/test) | header mode 相容 | 無 Bearer 時，仍可僅憑 `X-Tenant-Id` 存取；帶 Bearer 則優先採用 token。 |
+| `true` (compose / 生產)  | 強制認證 | 無 `Authorization: Bearer` 一律 `401`；只接受有效 token。 |
+
+`docker-compose.yml` 的 **backend 與 worker** 服務皆設 `AUTH_REQUIRED=true` 與
+`JWT_SECRET`(請於生產環境改為高強度隨機值)。相關環境變數見 [§6](#6-environment-variables)。
+
 ---
 
 ## 5. Local Development (without full Docker)
@@ -156,6 +249,11 @@ All variables live in `.env` (see `.env.example`). Backend field names are snake
 | `API_V1_PREFIX` | `/api/v1` | REST API prefix. |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:8080` | Comma-separated allowed origins (parsed to a list). |
 | `DEFAULT_REGION` | `TW` | Fallback region when `X-Region` header is absent. |
+| `JWT_SECRET` | `dev-secret-change-me` | HMAC secret for signing JWTs. **Change in production.** |
+| `JWT_ALGORITHM` | `HS256` | JWT signing algorithm. |
+| `JWT_EXPIRE_MINUTES` | `720` | Access-token lifetime (minutes; 720 = 12h). |
+| `AUTH_REQUIRED` | `false` | `true` ⇒ every `/api/v1` endpoint requires `Authorization: Bearer`. `false` ⇒ header mode (`X-Tenant-Id`) still works. compose sets `true`. |
+| `DEV_BOOTSTRAP` | `false` | `true` ⇒ run `create_all` + seed even on non-sqlite DBs (sqlite always bootstraps). |
 | `LINE_CHANNEL_ACCESS_TOKEN` | _(empty)_ | LINE push token (TW notifications). Empty ⇒ no-op/log. |
 | `DINGTALK_WEBHOOK_URL` | _(empty)_ | DingTalk/釘釘 webhook (CN notifications). Empty ⇒ no-op/log. |
 | `ERP_SCAN_INTERVAL_SECONDS` | `300` | Worker poll interval for `sync_event_log`. |
@@ -318,6 +416,14 @@ pytest
 - `tests/test_cpm_engine.py` — forward/backward pass, project duration, critical path, and
   error cases (cycle detection, unknown predecessor, empty input).
 - `tests/test_api.py` — FastAPI endpoint smoke/integration tests.
+- `tests/test_auth.py` — JWT login + `AUTH_REQUIRED` gating, runs on **SQLite dev mode**
+  (boots the app against a temp sqlite file with `DEV_BOOTSTRAP=1`, no Postgres needed) so it
+  is part of default `pytest` discovery on any dev machine.
+- `tests/test_integration_db.py` — DB-backed RLS isolation tests; skipped unless
+  `RUN_DB_TESTS=1` and a real Postgres DSN is configured.
+
+> Local sqlite dev install: `pip install -r requirements-dev.txt` (pure-python, ARM64-friendly)
+> then `python run_dev.py` or `pytest`.
 
 ### 10.1 CI (GitHub Actions)
 
@@ -330,8 +436,12 @@ three parts:
   real), then runs `pytest` including the DB-backed integration / RLS-isolation tests. In CI
   the DSN host is `localhost` (`postgresql+asyncpg://cpm_app:cpm_app_password@localhost:5432/cpm_saas`).
 - **Frontend build** — `npm ci` + `npm run build` to verify the Vite production build.
-- **docker-compose e2e** — `docker compose up --build` brings up the full stack and smoke-tests
-  it (e.g. the `/health` probe and an `/api/v1` request through the gateway).
+- **docker-compose e2e** — `docker compose up --build` brings up the full stack (which sets
+  `AUTH_REQUIRED=true`) and smoke-tests it through the gateway: waits on `/health`, asserts an
+  unauthenticated `/api/v1/projects` returns `401`, logs in via `/api/v1/auth/login`
+  (`admin@tw`) to obtain a Bearer token, creates/reads a project with it, then logs in as
+  `admin@cn` and confirms a cross-tenant read returns `404` (RLS isolation), and checks the
+  worker container stays up.
 
 ---
 

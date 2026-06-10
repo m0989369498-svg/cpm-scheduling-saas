@@ -4,6 +4,7 @@ import * as api from '../api/client.js'
 // localStorage 鍵（與 api/client.js 攔截器共用）
 const LS_TENANT_KEY = 'cpm.tenantId'
 const LS_REGION_KEY = 'cpm.region'
+const LS_TOKEN_KEY = 'cpm.token'
 
 // 預設值：示範租戶 TENT-9981，預設區域 TW
 const DEFAULT_TENANT = 'TENT-9981'
@@ -29,15 +30,58 @@ function writeLS(key, value) {
   }
 }
 
+function removeLS(key) {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(key)
+  } catch (e) {
+    /* 忽略 */
+  }
+}
+
 // zustand 排程狀態：
-// state { tenantId, region, projects, currentProject, loading, error }
+// state { tenantId, region, token, username, projects, currentProject, loading, error }
 export const useScheduleStore = create((set, get) => ({
   tenantId: readLS(LS_TENANT_KEY, DEFAULT_TENANT),
   region: readLS(LS_REGION_KEY, DEFAULT_REGION),
+  // 由 localStorage 初始化權杖（重新整理後維持登入狀態）；未登入為 null。
+  token: readLS(LS_TOKEN_KEY, null),
+  username: null,
   projects: [],
   currentProject: null,
   loading: false,
   error: null,
+
+  // 登入：以帳號/密碼換取 JWT。成功後設定 token + 由權杖回傳的 tenantId/region + username，
+  // 並將 token 持久化至 localStorage（攔截器與重新整理後復原皆使用）。
+  // 同時持久化 tenantId/region，使標頭回退與 token 一致。
+  login: async (username, password) => {
+    set({ loading: true, error: null })
+    try {
+      const data = await api.login(username, password)
+      const tenantId = data.tenant_id
+      const region = data.region
+      writeLS(LS_TOKEN_KEY, data.access_token)
+      if (tenantId) writeLS(LS_TENANT_KEY, tenantId)
+      if (region) writeLS(LS_REGION_KEY, region)
+      set({
+        token: data.access_token,
+        username,
+        tenantId: tenantId || get().tenantId,
+        region: region || get().region,
+        loading: false,
+      })
+      return data
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 登出：清除權杖/使用者與當前專案狀態，並移除 localStorage 權杖。
+  logout: () => {
+    removeLS(LS_TOKEN_KEY)
+    set({ token: null, username: null, currentProject: null, projects: [], error: null })
+  },
 
   // 切換租戶並持久化（攔截器下次請求即帶上新 X-Tenant-Id）。
   // 同時清空舊租戶的專案/清單，避免顯示到其他租戶的殘留資料（RLS 隔離）。
