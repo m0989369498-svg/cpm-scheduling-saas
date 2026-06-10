@@ -80,6 +80,47 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 # --------------------------------------------------------------------------- #
 # Fixtures
 # --------------------------------------------------------------------------- #
+@pytest.fixture(scope="session", autouse=True)
+def _nullpool_db_engine():
+    """整合測試專用：以 NullPool 重建 postgres async engine (僅在備妥真實 DB 時)。
+
+    這些整合測試混用「TestClient 的 portal event loop」與「run_async (asyncio.run)
+    各自建立的新 event loop」存取「同一個」async engine。預設的
+    AsyncAdaptedQueuePool 會把在 loop A 建立的 asyncpg 連線於 loop B 再借出，
+    導致 'got Future ... attached to a different loop' / 'Event loop is closed'
+    (例如 test_erp_enqueue_and_worker 以 asyncio.run 跑 scan_once()/查詢時)。
+
+    NullPool 不池化：每次取得 session 都在「當前 loop」新建連線、用完即關，
+    徹底消除跨 event loop 重用連線的問題。RLS 不受影響——set_config('app.
+    current_tenant', :t, true) 仍於各自交易/連線內設定。
+
+    開發機 (sqlite / 未設 RUN_DB_TESTS) 為 no-op，不影響既有單元測試。
+    autouse + session 範圍：於任何測試 (及其 lifespan/worker 建立 engine) 之前先生效。
+    """
+    if not _real_db_enabled():
+        yield
+        return
+
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+    from sqlalchemy.pool import NullPool
+
+    import app.database as database
+
+    engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool)
+    database._engine = engine
+    database._SessionLocal = async_sessionmaker(
+        bind=engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    yield
+
+
 @pytest.fixture(scope="session")
 def client() -> TestClient:
     """session 範圍的 FastAPI TestClient。

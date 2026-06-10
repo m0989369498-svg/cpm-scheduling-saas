@@ -90,6 +90,14 @@ def _rebind_sqlite_engine() -> None:
         autoflush=False,
     )
 
+    # 關鍵：同步更新 database 的「lazy 快取」(_engine / _SessionLocal)，而不只是
+    # public 屬性。lifespan 的 create_all() 與 worker 都透過 get_engine() /
+    # get_sessionmaker() 取用 _engine / _SessionLocal；若僅改 public 屬性，當
+    # _engine 先前已被建為 postgres (CI 中 lifespan 啟動的 ERP worker 會觸發建立)，
+    # create_all() 仍會把表建到 postgres 而非本檔 sqlite，使 login 查 sqlite 時
+    # 出現 "no such table: app_users"。
+    database._engine = new_engine
+    database._SessionLocal = new_sessionmaker
     database.engine = new_engine
     database.SessionLocal = new_sessionmaker
 
