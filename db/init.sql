@@ -245,6 +245,53 @@ INSERT INTO erp_integration.tenant_erp_config (tenant_id, erp_type, api_endpoint
 VALUES ('TENT-CN-002', 'YONYOU_CN', '', TRUE)
 ON CONFLICT (tenant_id) DO NOTHING;
 
+-- -----------------------------------------------------------------------------
+-- 4.6b 雙塔平行工程示範 (資源衝突) — TENT-9981 / PRJ-2026-TW-PARALLEL
+--      用以展示資源撫平 (resource leveling)：A/B 兩棟在 PA0 整備後「平行」施工，
+--      PA1 與 PB1 同時各需吊車 (crane) 1 部，但專案吊車上限僅 1 部 => 必然衝突。
+--      A 支 (PA1→PA2) 為要徑、B 支 (PB1→PB2) 較短而有正時差 (float)，故撫平
+--      啟發法會把可移動的 B 支推遲、保護要徑 A 支。
+--      依 forward/backward pass 預先計算 (專案總工期 = 12 天)：
+--        PA0: es0  ef2  ls0  lf2  float0  critical   (場地整備)
+--        PA1: es2  ef6  ls2  lf6  float0  critical   (A棟基礎)
+--        PB1: es2  ef6  ls5  lf9  float3            (B棟基礎)
+--        PA2: es6  ef11 ls6  lf11 float0  critical   (A棟結構)
+--        PB2: es6  ef8  ls9  lf11 float3            (B棟結構)
+--        PF : es11 ef12 ls11 lf12 float0  critical   (竣工驗收)
+-- -----------------------------------------------------------------------------
+INSERT INTO public.projects (project_id, tenant_id, project_name, region)
+VALUES ('PRJ-2026-TW-PARALLEL', 'TENT-9981', '雙塔平行工程示範 (資源衝突)', 'TW')
+ON CONFLICT (project_id) DO NOTHING;
+
+INSERT INTO public.tasks
+    (project_id, tenant_id, task_id, task_name, duration, status,
+     es, ef, ls, lf, float_time, is_critical, resource_demands)
+VALUES
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PA0', '場地整備', 2, 'COMPLETED',
+        0,  2,  0,  2, 0, TRUE,  '{"crane": 0, "manpower": 5}'::jsonb),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PA1', 'A棟基礎', 4, 'IN_PROGRESS',
+        2,  6,  2,  6, 0, TRUE,  '{"crane": 1, "manpower": 10}'::jsonb),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PB1', 'B棟基礎', 4, 'PENDING',
+        2,  6,  5,  9, 3, FALSE, '{"crane": 1, "manpower": 10}'::jsonb),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PA2', 'A棟結構', 5, 'PENDING',
+        6, 11,  6, 11, 0, TRUE,  '{"crane": 1, "manpower": 12}'::jsonb),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PB2', 'B棟結構', 2, 'PENDING',
+        6,  8,  9, 11, 3, FALSE, '{"crane": 1, "manpower": 8}'::jsonb),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PF',  '竣工驗收', 1, 'PENDING',
+       11, 12, 11, 12, 0, TRUE,  '{"crane": 0, "manpower": 4}'::jsonb)
+ON CONFLICT (project_id, task_id) DO NOTHING;
+
+INSERT INTO public.task_dependencies
+    (project_id, tenant_id, task_id, predecessor_task_id)
+VALUES
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PA1', 'PA0'),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PB1', 'PA0'),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PA2', 'PA1'),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PB2', 'PB1'),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PF',  'PA2'),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PF',  'PB2')
+ON CONFLICT (project_id, task_id, predecessor_task_id) DO NOTHING;
+
 -- =============================================================================
 -- 4.8 Phase 8 — 資源撫平 / 蒙地卡羅 新增表 (public schema，RLS ENABLE+FORCE)
 -- -----------------------------------------------------------------------------
@@ -321,7 +368,10 @@ VALUES
     ('PRJ-2026-TW-001', 'TENT-9981',   'crane',    2),
     ('PRJ-2026-TW-001', 'TENT-9981',   'manpower', 20),
     ('PRJ-2026-CN-001', 'TENT-CN-002', 'crane',    2),
-    ('PRJ-2026-CN-001', 'TENT-CN-002', 'manpower', 20)
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'manpower', 20),
+    -- 雙塔平行示範：吊車上限刻意僅 1 部 => PA1 與 PB1 平行時必然超載 (crane=2 > 1)。
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'crane',    1),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'manpower', 20)
 ON CONFLICT (project_id, resource_type) DO NOTHING;
 
 -- 任務風險參數 (PERT 三點估計) ------------------------------------------------
@@ -332,7 +382,14 @@ VALUES
     ('PRJ-2026-TW-001', 'TENT-9981',   'T-02', 2, 3, 7),
     ('PRJ-2026-TW-001', 'TENT-9981',   'T-03', 1, 2, 5),
     ('PRJ-2026-CN-001', 'TENT-CN-002', 'C-01', 2, 4, 8),
-    ('PRJ-2026-CN-001', 'TENT-CN-002', 'C-02', 4, 6, 11)
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'C-02', 4, 6, 11),
+    -- 雙塔平行示範 (PERT 三點估計：a / m / b)。
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PA0', 1, 2, 4),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PA1', 3, 4, 8),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PB1', 2, 4, 7),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PA2', 4, 5, 10),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PB2', 1, 2, 5),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PF',  1, 1, 2)
 ON CONFLICT (project_id, task_id) DO NOTHING;
 
 -- =============================================================================

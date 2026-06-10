@@ -108,6 +108,47 @@ async def _seed_core_data() -> None:
                 ("C-02", 4, 6, 11),
             ],
         },
+        # 雙塔平行工程示範 (資源衝突)：A/B 兩棟於 PA0 整備後平行施工。
+        # PA1 與 PB1 同時各需吊車 1 部，但專案吊車上限僅 1 部 => 必然衝突。
+        # A 支 (PA1→PA2) 為要徑、B 支 (PB1→PB2) 較短而有正時差，撫平啟發法會
+        # 把可移動的 B 支推遲、保護要徑 A 支。es/ef/ls/lf/float/critical 之值
+        # 係以 calculate_cpm 預先算得 (專案總工期 = 12 天)。
+        "PRJ-2026-TW-PARALLEL": {
+            "tenant_id": "TENT-9981",
+            "project_name": "雙塔平行工程示範 (資源衝突)",
+            "region": "TW",
+            "tasks": [
+                ("PA0", "場地整備", 2, "COMPLETED", 0, 2, 0, 2, 0, True,
+                    {"crane": 0, "manpower": 5}),
+                ("PA1", "A棟基礎", 4, "IN_PROGRESS", 2, 6, 2, 6, 0, True,
+                    {"crane": 1, "manpower": 10}),
+                ("PB1", "B棟基礎", 4, "PENDING", 2, 6, 5, 9, 3, False,
+                    {"crane": 1, "manpower": 10}),
+                ("PA2", "A棟結構", 5, "PENDING", 6, 11, 6, 11, 0, True,
+                    {"crane": 1, "manpower": 12}),
+                ("PB2", "B棟結構", 2, "PENDING", 6, 8, 9, 11, 3, False,
+                    {"crane": 1, "manpower": 8}),
+                ("PF", "竣工驗收", 1, "PENDING", 11, 12, 11, 12, 0, True,
+                    {"crane": 0, "manpower": 4}),
+            ],
+            "deps": [
+                ("PA1", "PA0"),
+                ("PB1", "PA0"),
+                ("PA2", "PA1"),
+                ("PB2", "PB1"),
+                ("PF", "PA2"),
+                ("PF", "PB2"),
+            ],
+            "limits": [("crane", 1), ("manpower", 20)],
+            "risk": [
+                ("PA0", 1, 2, 4),
+                ("PA1", 3, 4, 8),
+                ("PB1", 2, 4, 7),
+                ("PA2", 4, 5, 10),
+                ("PB2", 1, 2, 5),
+                ("PF", 1, 1, 2),
+            ],
+        },
     }
     # (tenant_id, erp_type, api_endpoint)
     erp_configs = [
