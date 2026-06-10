@@ -5,6 +5,8 @@ import * as api from '../api/client.js'
 const LS_TENANT_KEY = 'cpm.tenantId'
 const LS_REGION_KEY = 'cpm.region'
 const LS_TOKEN_KEY = 'cpm.token'
+// Phase 10：角色（role）持久化，使重新整理後仍可正確顯示/隱藏管理介面與寫入動作。
+const LS_ROLE_KEY = 'cpm.role'
 
 // 預設值：示範租戶 TENT-9981，預設區域 TW
 const DEFAULT_TENANT = 'TENT-9981'
@@ -45,11 +47,19 @@ export const useScheduleStore = create((set, get) => ({
   region: readLS(LS_REGION_KEY, DEFAULT_REGION),
   // 由 localStorage 初始化權杖（重新整理後維持登入狀態）；未登入為 null。
   token: readLS(LS_TOKEN_KEY, null),
+  // 角色：viewer | editor | admin。由 localStorage 初始化（重新整理後復原）；未登入為 null。
+  role: readLS(LS_ROLE_KEY, null),
   username: null,
   projects: [],
   currentProject: null,
   loading: false,
   error: null,
+
+  // ---- Phase 10：儀表板（投資組合 KPI）+ 使用者管理 ----
+  // dashboard : {projects:[ProjectKpi], totals:{...}} | null
+  // users     : list[UserOut]（僅 admin 載入）
+  dashboard: null,
+  users: [],
 
   // ---- Phase 8：資源撫平 + 蒙地卡羅 ----
   // resources  : ResourceConfig { limits:[{resource_type,max_capacity}], demands:{taskId:{res:qty}} } | null
@@ -80,11 +90,15 @@ export const useScheduleStore = create((set, get) => ({
       const data = await api.login(username, password)
       const tenantId = data.tenant_id
       const region = data.region
+      // 角色由登入回應決定（舊權杖/後端缺欄位時退回 admin，與後端預設一致）。
+      const role = data.role || 'admin'
       writeLS(LS_TOKEN_KEY, data.access_token)
+      writeLS(LS_ROLE_KEY, role)
       if (tenantId) writeLS(LS_TENANT_KEY, tenantId)
       if (region) writeLS(LS_REGION_KEY, region)
       set({
         token: data.access_token,
+        role,
         username,
         tenantId: tenantId || get().tenantId,
         region: region || get().region,
@@ -97,11 +111,13 @@ export const useScheduleStore = create((set, get) => ({
     }
   },
 
-  // 登出：清除權杖/使用者與當前專案狀態，並移除 localStorage 權杖。
+  // 登出：清除權杖/使用者與當前專案狀態，並移除 localStorage 權杖/角色。
   logout: () => {
     removeLS(LS_TOKEN_KEY)
+    removeLS(LS_ROLE_KEY)
     set({
       token: null,
+      role: null,
       username: null,
       currentProject: null,
       projects: [],
@@ -116,6 +132,9 @@ export const useScheduleStore = create((set, get) => ({
       baseline: null,
       evm: null,
       dataDate: null,
+      // 重置 Phase 10 儀表板/使用者狀態
+      dashboard: null,
+      users: [],
     })
   },
 
@@ -137,6 +156,9 @@ export const useScheduleStore = create((set, get) => ({
       baseline: null,
       evm: null,
       dataDate: null,
+      // 切換租戶：清空 Phase 10 儀表板/使用者狀態（避免跨租戶殘留）
+      dashboard: null,
+      users: [],
     })
   },
 
@@ -461,6 +483,84 @@ export const useScheduleStore = create((set, get) => ({
     try {
       const result = await api.dispatchEvmAlert(cur.project_id, dataDate)
       set({ loading: false })
+      return result
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // ---- Phase 10：儀表板（投資組合 KPI）----
+
+  // 載入租戶層級儀表板彙總；存入 store.dashboard
+  loadDashboard: async () => {
+    set({ loading: true, error: null })
+    try {
+      const dashboard = await api.getDashboard()
+      set({ dashboard, loading: false })
+      return dashboard
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // ---- Phase 10：使用者管理（僅 admin）----
+
+  // 載入本租戶使用者清單；存入 store.users
+  loadUsers: async () => {
+    set({ loading: true, error: null })
+    try {
+      const users = await api.listUsers()
+      set({ users: Array.isArray(users) ? users : [], loading: false })
+      return users
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 建立使用者（body {username,password,role,region?}）；成功後刷新清單
+  createUser: async (body) => {
+    set({ loading: true, error: null })
+    try {
+      const user = await api.createUser(body)
+      set({ loading: false })
+      get()
+        .loadUsers()
+        .catch(() => {})
+      return user
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 更新使用者（body {role?,is_active?,password?}）；成功後刷新清單
+  updateUser: async (id, body) => {
+    set({ loading: true, error: null })
+    try {
+      const user = await api.updateUser(id, body)
+      set({ loading: false })
+      get()
+        .loadUsers()
+        .catch(() => {})
+      return user
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 刪除使用者；成功後刷新清單
+  deleteUser: async (id) => {
+    set({ loading: true, error: null })
+    try {
+      const result = await api.deleteUser(id)
+      set({ loading: false })
+      get()
+        .loadUsers()
+        .catch(() => {})
       return result
     } catch (err) {
       set({ error: extractError(err), loading: false })

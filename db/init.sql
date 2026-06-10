@@ -407,10 +407,36 @@ CREATE TABLE IF NOT EXISTS public.app_users (
     username       VARCHAR(150) NOT NULL UNIQUE,           -- 登入帳號 (全域唯一)
     password_hash  VARCHAR(255) NOT NULL,                  -- passlib pbkdf2_sha256
     region         VARCHAR(20)  NOT NULL DEFAULT 'TW',     -- 區域 (TW / CN)
+    role           VARCHAR(20)  NOT NULL DEFAULT 'admin',  -- 角色 admin > editor > viewer
     is_active      BOOLEAN      DEFAULT TRUE,
     created_at     TIMESTAMPTZ  DEFAULT now()
 );
 -- 注意：刻意「不」對 app_users ENABLE ROW LEVEL SECURITY。
+
+-- =============================================================================
+-- 4.10 稽核日誌 app_audit_log (public schema，啟用 RLS)
+-- -----------------------------------------------------------------------------
+-- 記錄使用者管理 (建立 / 更新 / 刪除帳號) 等敏感操作，供追溯與合規。
+-- 受 RLS 保護 (與 tasks / projects 一致；以 tenant_id 隔離)。
+-- 本表置於 GRANT 區塊之前，方能被「GRANT ON ALL TABLES IN SCHEMA public」涵蓋。
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS public.audit_log (
+    id          BIGSERIAL    PRIMARY KEY,
+    tenant_id   VARCHAR(50)  NOT NULL,                     -- 租戶代碼 (RLS 隔離鍵)
+    actor       VARCHAR(150),                              -- 操作者 (username)
+    action      VARCHAR(80)  NOT NULL,                     -- 動作 e.g. user.create
+    detail      JSONB,                                     -- 動作明細 (任意 JSON)
+    created_at  TIMESTAMPTZ  DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_tenant ON public.audit_log(tenant_id);
+
+ALTER TABLE public.audit_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.audit_log FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_audit_log ON public.audit_log;
+CREATE POLICY tenant_isolation_audit_log ON public.audit_log
+    USING       (tenant_id = current_setting('app.current_tenant', true))
+    WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
 
 -- =============================================================================
 -- 4.9 Phase 9 — 進度追蹤 / 實獲值管理 (EVM) 新增表 (public schema，RLS ENABLE+FORCE)

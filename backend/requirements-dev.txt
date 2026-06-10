@@ -31,8 +31,9 @@ pydantic-settings
 redis>=5
 apscheduler
 
-# --- 報表 / HTTP client ---
+# --- 報表 / HTTP client (openpyxl 為純 python，ARM64 可直接安裝) ---
 reportlab
+openpyxl
 httpx
 
 # --- 表單 (multipart) ---

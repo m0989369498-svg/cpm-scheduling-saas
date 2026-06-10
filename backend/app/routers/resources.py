@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import risk_listener
 from app.core.resource_leveling import level_resources
-from app.deps import TenantContext, get_db, verify_tenant
+from app.deps import TenantContext, get_db, require_role, verify_tenant
 from app.models.orm import ProjectResourceLimit, Task
 from app.routers.projects import (
     _build_task_definitions,
@@ -113,6 +113,7 @@ async def set_resources(
     payload: ResourceConfig,
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> ResourceConfig:
     """upsert 資源限制 (project_resource_limits) 與各任務需求 (tasks.resource_demands)。
 

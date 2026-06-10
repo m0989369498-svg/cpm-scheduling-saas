@@ -9,6 +9,7 @@ apscheduler
 pyjwt
 passlib
 reportlab
+openpyxl
 httpx
 python-multipart
 pytest

@@ -233,4 +233,48 @@ export async function dispatchEvmAlert(projectId, dataDate) {
   return res.data
 }
 
+// ---- Phase 10：儀表板（Dashboard）+ 使用者管理（Users）+ 匯出（Exports）----
+
+// 取得租戶層級儀表板（投資組合 KPI 彙總）-> {projects:[ProjectKpi], totals:{...}}
+export async function getDashboard() {
+  const res = await apiClient.get('/dashboard')
+  return res.data
+}
+
+// 列出本租戶使用者（需 admin）-> list[UserOut]
+export async function listUsers() {
+  const res = await apiClient.get('/users')
+  return res.data
+}
+
+// 建立使用者（需 admin；body {username,password,role,region?}）-> UserOut
+export async function createUser(body) {
+  const res = await apiClient.post('/users', body)
+  return res.data
+}
+
+// 更新使用者（需 admin；body {role?,is_active?,password?}）-> UserOut
+export async function updateUser(id, body) {
+  const res = await apiClient.put(`/users/${encodeURIComponent(id)}`, body)
+  return res.data
+}
+
+// 刪除使用者（需 admin）-> {ok:true}
+export async function deleteUser(id) {
+  const res = await apiClient.delete(`/users/${encodeURIComponent(id)}`)
+  return res.data
+}
+
+// Excel 匯出 URL（GET 檔案下載；需以 Authorization 標頭驗證後以 blob 觸發下載）
+export function exportXlsxUrl(projectId) {
+  const base = API_BASE_URL.replace(/\/$/, '')
+  return `${base}/projects/${encodeURIComponent(projectId)}/export.xlsx`
+}
+
+// PDF 匯出 URL（GET 檔案下載；需以 Authorization 標頭驗證後以 blob 觸發下載）
+export function exportPdfUrl(projectId) {
+  const base = API_BASE_URL.replace(/\/$/, '')
+  return `${base}/projects/${encodeURIComponent(projectId)}/export.pdf`
+}
+
 export default apiClient

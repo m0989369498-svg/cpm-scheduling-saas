@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import risk_listener
 from app.core.monte_carlo import simulate_schedule
-from app.deps import TenantContext, get_db, verify_tenant
+from app.deps import TenantContext, get_db, require_role, verify_tenant
 from app.models.orm import Task, TaskRiskParameter
 from app.routers.projects import (
     _build_task_definitions,
@@ -94,6 +94,7 @@ async def set_risk(
     payload: list[RiskParam],
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> list[RiskParam]:
     """upsert 各任務三點估計 (task_risk_parameters)。
 

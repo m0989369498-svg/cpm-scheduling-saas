@@ -25,6 +25,8 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     tenant_id: str
     region: str
+    # 角色（admin / editor / viewer）；舊用戶或缺欄位時預設 admin，向後相容。
+    role: str = "admin"
 
 
 class MeResponse(BaseModel):
@@ -33,3 +35,5 @@ class MeResponse(BaseModel):
     username: str
     tenant_id: str
     region: str
+    # 角色（admin / editor / viewer）；header/dev 模式為 admin。
+    role: str = "admin"

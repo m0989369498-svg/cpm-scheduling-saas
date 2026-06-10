@@ -57,16 +57,22 @@ async def login(payload: LoginRequest) -> TokenResponse:
         )
 
     region = user.region or settings.default_region
+    # 角色寫入 token claim 與回應。以 getattr 防呆：若 ORM 尚未具備 role 欄位
+    # (向後相容過渡期) 或值為空，皆退回 'admin'，與 DB DEFAULT 'admin' 一致，
+    # 既有 demo admin 用戶權限不受影響。
+    role = getattr(user, "role", None) or "admin"
     token = create_access_token(
         sub=user.username,
         tenant_id=user.tenant_id,
         region=region,
+        role=role,
     )
     return TokenResponse(
         access_token=token,
         token_type="bearer",
         tenant_id=user.tenant_id,
         region=region,
+        role=role,
     )
 
 
@@ -82,4 +88,5 @@ async def me(ctx: TenantContext = Depends(verify_tenant)) -> MeResponse:
         username=username,
         tenant_id=ctx.tenant_id,
         region=ctx.region,
+        role=getattr(ctx, "role", None) or "admin",
     )

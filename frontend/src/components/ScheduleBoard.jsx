@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { t } from '../i18n';
-import { reportUrl } from '../api/client';
+import { reportUrl, exportXlsxUrl, exportPdfUrl } from '../api/client';
 import GanttChart from './GanttChart';
 import ProjectForm from './ProjectForm';
 import ResourcePanel from './ResourcePanel';
@@ -43,6 +43,8 @@ export default function ScheduleBoard() {
   const {
     tenantId,
     region,
+    role,
+    token,
     projects,
     currentProject,
     loading,
@@ -62,6 +64,10 @@ export default function ScheduleBoard() {
     loadProgress,
     loadBaseline,
   } = useScheduleStore();
+
+  // 寫入權限：editor 以上可寫；viewer 僅讀（隱藏所有寫入動作）。
+  // 角色缺失（舊權杖/標頭模式）視為 admin（與後端預設一致），維持向後相容。
+  const canWrite = (role || 'admin') !== 'viewer';
 
   // 本地草稿：每列工期輸入框的暫存值 (key = task_id)
   const [durationDrafts, setDurationDrafts] = useState({});
@@ -226,6 +232,57 @@ export default function ScheduleBoard() {
     }
   };
 
+  // Phase 10：以 Authorization 標頭驗證的檔案下載（GET -> blob -> 觸發瀏覽器下載）。
+  // window.open 無法帶 Bearer，故改以 fetch 取得 blob 後建立暫時連結下載。
+  const downloadWithAuth = async (url, fallbackName) => {
+    try {
+      const headers = {
+        'X-Tenant-Id': tenantId,
+        'X-Region': region,
+      };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      // 嘗試由 Content-Disposition 取得檔名，否則使用回退名稱
+      let filename = fallbackName;
+      const cd = res.headers.get('Content-Disposition');
+      if (cd) {
+        const m = /filename\*?=(?:UTF-8'')?["']?([^"';]+)/i.exec(cd);
+        if (m && m[1]) filename = decodeURIComponent(m[1]);
+      }
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objUrl);
+    } catch (e) {
+      // eslint-disable-next-line no-alert
+      window.alert(`${t(region, 'error')}: ${e && e.message ? e.message : e}`);
+    }
+  };
+
+  const handleExportExcel = () => {
+    if (currentProject?.project_id) {
+      downloadWithAuth(
+        exportXlsxUrl(currentProject.project_id),
+        `${currentProject.project_id}.xlsx`,
+      );
+    }
+  };
+
+  const handleExportPdf = () => {
+    if (currentProject?.project_id) {
+      downloadWithAuth(
+        exportPdfUrl(currentProject.project_id),
+        `${currentProject.project_id}.pdf`,
+      );
+    }
+  };
+
   // ---- 樣式 ----
   const btnStyle = {
     padding: '6px 14px',
@@ -310,16 +367,18 @@ export default function ScheduleBoard() {
           </select>
         </div>
 
-        {/* 新增專案 */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          <label style={{ fontSize: '12px', color: '#666' }}>&nbsp;</label>
-          <button
-            style={{ ...btnStyle, background: '#27ae60' }}
-            onClick={() => setShowProjectForm(true)}
-          >
-            + {t(region, 'newProject')}
-          </button>
-        </div>
+        {/* 新增專案（viewer 隱藏） */}
+        {canWrite && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <label style={{ fontSize: '12px', color: '#666' }}>&nbsp;</label>
+            <button
+              style={{ ...btnStyle, background: '#27ae60' }}
+              onClick={() => setShowProjectForm(true)}
+            >
+              + {t(region, 'newProject')}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ===== 建立專案模態 ===== */}
@@ -391,11 +450,21 @@ export default function ScheduleBoard() {
             <button style={{ ...btnStyle, background: '#2980b9' }} onClick={handleRecalc}>
               {t(region, 'recalc')}
             </button>
-            <button style={{ ...btnStyle, background: '#8e44ad' }} onClick={handleSyncErp}>
-              {t(region, 'syncErp')}
-            </button>
+            {/* 拋轉 ERP 為寫入動作：viewer 隱藏 */}
+            {canWrite && (
+              <button style={{ ...btnStyle, background: '#8e44ad' }} onClick={handleSyncErp}>
+                {t(region, 'syncErp')}
+              </button>
+            )}
             <button style={{ ...btnStyle, background: '#d35400' }} onClick={handleDownloadReport}>
               {t(region, 'downloadReport')}
+            </button>
+            {/* 匯出（唯讀，viewer 亦可）：Excel + PDF，皆以 Bearer 驗證下載 */}
+            <button style={{ ...btnStyle, background: '#1e8449' }} onClick={handleExportExcel}>
+              {t(region, 'exportExcel')}
+            </button>
+            <button style={{ ...btnStyle, background: '#c0392b' }} onClick={handleExportPdf}>
+              {t(region, 'exportPdf')}
             </button>
           </div>
 
@@ -456,7 +525,7 @@ export default function ScheduleBoard() {
               <GanttChart
                 tasks={tasks}
                 region={region}
-                onTaskDurationChange={(id, d) => changeTaskDuration(id, d)}
+                onTaskDurationChange={canWrite ? (id, d) => changeTaskDuration(id, d) : undefined}
                 overCapacityDays={overCapacityDays}
                 baseline={baseline}
                 progress={progressMap}
@@ -486,14 +555,14 @@ export default function ScheduleBoard() {
                 <th style={thStyle}>{t(region, 'floatTime')}</th>
                 <th style={thStyle}>{t(region, 'critical')}</th>
                 <th style={thStyle}>Pred.</th>
-                <th style={thStyle}>{t(region, 'updateDuration')}</th>
-                <th style={thStyle}>{t(region, 'delete')}</th>
+                {canWrite && <th style={thStyle}>{t(region, 'updateDuration')}</th>}
+                {canWrite && <th style={thStyle}>{t(region, 'delete')}</th>}
               </tr>
             </thead>
             <tbody>
               {tasks.length === 0 && (
                 <tr>
-                  <td style={{ ...tdStyle, textAlign: 'center', color: '#999' }} colSpan={9}>
+                  <td style={{ ...tdStyle, textAlign: 'center', color: '#999' }} colSpan={canWrite ? 9 : 7}>
                     {t(region, 'addTask')}
                   </td>
                 </tr>
@@ -511,7 +580,8 @@ export default function ScheduleBoard() {
                       <input
                         type="number"
                         min="0"
-                        style={{ ...inputStyle, width: '70px' }}
+                        readOnly={!canWrite}
+                        style={{ ...inputStyle, width: '70px', ...(canWrite ? {} : { background: '#f1f1f1' }) }}
                         value={durationDrafts[tk.task_id] ?? tk.duration}
                         onChange={(e) => handleDraftChange(tk.task_id, e.target.value)}
                       />
@@ -521,30 +591,35 @@ export default function ScheduleBoard() {
                     <td style={{ ...tdStyle, color: '#666' }}>
                       {(tk.predecessors || []).join(', ')}
                     </td>
-                    <td style={tdStyle}>
-                      <button
-                        style={{ ...btnStyle, padding: '4px 10px', background: '#27ae60' }}
-                        onClick={() => handleUpdateDuration(tk.task_id)}
-                      >
-                        {t(region, 'updateDuration')}
-                      </button>
-                    </td>
-                    <td style={tdStyle}>
-                      <button
-                        style={{ ...btnStyle, padding: '4px 10px', background: '#e74c3c' }}
-                        onClick={() => handleRemoveTask(tk.task_id)}
-                        title={t(region, 'deleteTask')}
-                      >
-                        {t(region, 'delete')}
-                      </button>
-                    </td>
+                    {canWrite && (
+                      <td style={tdStyle}>
+                        <button
+                          style={{ ...btnStyle, padding: '4px 10px', background: '#27ae60' }}
+                          onClick={() => handleUpdateDuration(tk.task_id)}
+                        >
+                          {t(region, 'updateDuration')}
+                        </button>
+                      </td>
+                    )}
+                    {canWrite && (
+                      <td style={tdStyle}>
+                        <button
+                          style={{ ...btnStyle, padding: '4px 10px', background: '#e74c3c' }}
+                          onClick={() => handleRemoveTask(tk.task_id)}
+                          title={t(region, 'deleteTask')}
+                        >
+                          {t(region, 'delete')}
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 );
               })}
             </tbody>
           </table>
 
-          {/* ===== 新增任務表單 ===== */}
+          {/* ===== 新增任務表單（viewer 隱藏整個寫入表單） ===== */}
+          {canWrite && (
           <div
             style={{
               padding: '12px',
@@ -607,6 +682,7 @@ export default function ScheduleBoard() {
               </button>
             </div>
           </div>
+          )}
           </>
           )}
         </>

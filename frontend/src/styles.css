@@ -641,3 +641,44 @@ tr.critical-row td {
   color: #fff;
   opacity: 1;
 }
+
+/* ---- Phase 10：頂層導覽分頁（排程板 / 儀表板 / 使用者管理） ---- */
+.app-nav {
+  display: flex;
+  gap: 4px;
+  padding: 0 24px;
+  background: var(--color-panel);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-nav-tab {
+  background: transparent;
+  color: var(--color-muted);
+  border: none;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  padding: 12px 18px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.app-nav-tab:hover {
+  color: var(--color-text);
+  opacity: 1;
+}
+
+.app-nav-tab.active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+
+.app-view {
+  /* 各視圖自帶 .board 內距 */
+}
+
+/* ---- Phase 10：儀表板 KPI 卡片網格 ---- */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}

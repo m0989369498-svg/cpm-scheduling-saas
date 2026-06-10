@@ -339,7 +339,33 @@ class AppUser(Base):
     region: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'TW'")
     )
+    # 角色 (role)：admin > editor > viewer。預設 admin —— 既有舊帳號 (未帶 role)
+    # 升級後仍享完整權限，向後相容 (既有測試以 admin@tw / header-mode 皆視為 admin)。
+    role: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'admin'")
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP_TZ, server_default=func.now()
+    )
+
+
+class AuditLog(Base):
+    """稽核日誌 (audit_log)。
+
+    記錄使用者管理等敏感操作 (建立 / 更新 / 刪除帳號)，供追溯與合規。
+    受 RLS 保護 (與 tasks / projects 一致；以 tenant_id 隔離)，故置於 public schema。
+    detail 採可攜 JSON 型別 (PostgreSQL -> JSONB、sqlite -> JSON)。
+    """
+
+    __tablename__ = "audit_log"
+    __table_args__ = (Index("ix_audit_log_tenant", "tenant_id"),)
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(150))
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    detail: Mapped[dict | None] = mapped_column(JSON_PORTABLE)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP_TZ, server_default=func.now()
     )

@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps import verify_tenant, get_db, TenantContext
+from app.deps import verify_tenant, get_db, TenantContext, require_role
 from app.models.orm import Project, Task, TaskDependency
 from app.schemas.schedule import (
     ProjectCreate,
@@ -266,6 +266,7 @@ async def create_project(
     payload: ProjectCreate,
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> ProjectOut:
     """建立專案：持久化任務 + 相依，跑 CPM，回寫結果。"""
     project_id = payload.project_id or f"PRJ-{uuid.uuid4().hex[:12].upper()}"
@@ -354,6 +355,7 @@ async def update_project(
     payload: ProjectBase,
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> ProjectOut:
     """更新專案中繼資料（名稱 / 區域）。"""
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
@@ -370,6 +372,7 @@ async def delete_project(
     project_id: str,
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> dict:
     """刪除專案（任務經 ON DELETE CASCADE 連帶刪除；相依手動清理）。"""
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)

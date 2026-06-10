@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps import verify_tenant, get_db, TenantContext
+from app.deps import verify_tenant, get_db, TenantContext, require_role
 from app.models.orm import Task, TaskMapping, SyncEvent
 from app.schemas.schedule import ErpSyncRequest
 from app.routers.projects import _get_project_or_404, _load_tasks
@@ -64,6 +64,7 @@ async def sync_erp(
     payload: ErpSyncRequest,
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> dict:
     """拋轉專案至 ERP：為每個任務寫入一筆 PENDING 同步事件。
 

@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import risk_listener
 from app.core.cpm_engine import calculate_cpm, project_duration
 from app.core.evm import compute_evm
-from app.deps import TenantContext, get_db, verify_tenant
+from app.deps import TenantContext, get_db, require_role, verify_tenant
 from app.models.orm import ProjectBaseline, TaskProgress
 from app.routers.projects import (
     _build_task_definitions,
@@ -155,6 +155,7 @@ async def set_progress(
     payload: list[ProgressEntry],
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> list[ProgressEntry]:
     """upsert 各任務進度 (per (project_id, task_id))。
 
@@ -205,6 +206,7 @@ async def create_baseline(
     payload: dict | None = None,
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> BaselineOut:
     """建立 (凍結) 一條基準線。
 
@@ -340,6 +342,7 @@ async def dispatch_evm_alert(
     ),
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> dict:
     """重算 EVM; 若 risk_flagged 則拋轉排程/成本超支風險預警。
 

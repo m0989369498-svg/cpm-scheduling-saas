@@ -9,7 +9,7 @@
 公開 API（其他模組依此契約，請勿變更簽名）：
   hash_password(p) -> str
   verify_password(p, hashed) -> bool
-  create_access_token(*, sub, tenant_id, region) -> str
+  create_access_token(*, sub, tenant_id, region, role="admin") -> str
   decode_token(token) -> dict   # 失效 / 過期 -> 拋出例外
 """
 
@@ -40,13 +40,17 @@ def verify_password(p: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(*, sub: str, tenant_id: str, region: str) -> str:
+def create_access_token(
+    *, sub: str, tenant_id: str, region: str, role: str = "admin"
+) -> str:
     """簽發存取權杖（access token）。
 
     claims：
       sub        主體（通常為 username）
       tenant_id  租戶識別碼
       region     地區（TW / CN …）
+      role       角色（admin / editor / viewer）；舊呼叫端未帶時預設 admin，
+                 與資料庫 app_users.role 之 DEFAULT 'admin' 一致，確保向後相容。
       exp        過期時間 = 現在 + settings.jwt_expire_minutes 分鐘
     以 HS256 與 settings.jwt_secret 簽章。
     """
@@ -55,6 +59,7 @@ def create_access_token(*, sub: str, tenant_id: str, region: str) -> str:
         "sub": sub,
         "tenant_id": tenant_id,
         "region": region,
+        "role": role,
         "exp": now + timedelta(minutes=settings.jwt_expire_minutes),
     }
     return jwt.encode(

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps import verify_tenant, get_db, TenantContext
+from app.deps import verify_tenant, get_db, TenantContext, require_role
 from app.models.orm import Task, TaskDependency
 from app.schemas.schedule import (
     TaskCreate,
@@ -143,6 +143,7 @@ async def add_task(
     payload: TaskCreate,
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> ProjectOut:
     """新增任務後重算整個專案 CPM。"""
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
@@ -187,6 +188,7 @@ async def update_task(
     payload: TaskUpdate,
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> ProjectOut:
     """部分更新任務（名稱 / 工期 / 狀態 / 前置任務）後重算 CPM。"""
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
@@ -215,6 +217,7 @@ async def update_task_duration(
     payload: TaskDurationUpdate,
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> ProjectOut:
     """拖曳改工期路徑：更新工期後重算整個專案 CPM 並回傳最新 ProjectOut。"""
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
@@ -232,6 +235,7 @@ async def delete_task(
     task_id: str,
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
 ) -> ProjectOut:
     """刪除任務及其相依（含其他任務以它為前置者）後重算 CPM。"""
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)

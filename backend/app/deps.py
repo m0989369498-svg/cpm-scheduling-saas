@@ -21,6 +21,11 @@ from app import database
 from app.database import set_tenant_guc
 
 
+# 角色階層 (role hierarchy)：admin > editor > viewer。
+# require_role 以此比較數值大小判定授權；數值越大權限越高。
+ROLE_ORDER: dict[str, int] = {"viewer": 0, "editor": 1, "admin": 2}
+
+
 @dataclass
 class TenantContext:
     """目前請求之租戶情境。
@@ -28,11 +33,14 @@ class TenantContext:
     tenant_id：租戶識別碼 (對應 RLS app.current_tenant)。
     region：地區 (TW=台灣 / CN=中國大陸)，影響 i18n、通知通道、ERP adapter 預設。
     sub：登入主體 (JWT sub，通常為 username)；header 模式下為空字串。
+    role：角色 (admin / editor / viewer)。Bearer 模式取自 token claim
+          (舊 token 無此 claim 時預設 admin)；header/dev 模式固定 admin。
     """
 
     tenant_id: str
     region: str
     sub: str = ""
+    role: str = "admin"
 
 
 async def verify_tenant(
@@ -70,10 +78,13 @@ async def verify_tenant(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         region = (claims.get("region") or settings.default_region).strip().upper()
+        # 舊版 token 無 "role" claim -> 預設 admin (維持既有 token 持有者之完整權限)。
+        role = str(claims.get("role") or "admin")
         return TenantContext(
             tenant_id=str(tenant_id),
             region=region,
             sub=str(claims.get("sub") or ""),
+            role=role,
         )
 
     # --- 無 Bearer token ---
@@ -91,11 +102,42 @@ async def verify_tenant(
             detail="Missing required header: X-Tenant-Id",
         )
     region = (x_region or settings.default_region).strip().upper()
-    return TenantContext(tenant_id=x_tenant_id.strip(), region=region)
+    # dev / header 模式：無 token 角色資訊，固定授予 admin (與既有測試/前端相容)。
+    return TenantContext(tenant_id=x_tenant_id.strip(), region=region, role="admin")
 
 
 # 型別別名：方便 router 以 Annotated 形式注入。
 TenantDep = Annotated[TenantContext, Depends(verify_tenant)]
+
+
+def require_role(min_role: str):
+    """產生一個 FastAPI 依賴：要求目前情境之角色 >= min_role，否則 403。
+
+    用法 (掛在「寫入 / 持久化」端點上，唯讀 / 計算端點不掛)：
+        @router.post(..., dependencies=[Depends(require_role("editor"))])
+    或注入後取用情境：
+        ctx: TenantContext = Depends(require_role("admin"))
+
+    授權判定：ROLE_ORDER[ctx.role] >= ROLE_ORDER[min_role]。
+    讀取與 verify_tenant 相同的 TenantContext；header/dev 模式為 admin，
+    故既有測試 (admin 或 header 模式) 全數放行，向後相容。
+    未知角色字串視為最低權限 (viewer)，採取保守拒絕策略。
+    """
+    required = ROLE_ORDER.get(min_role)
+    if required is None:
+        # 程式設定錯誤 (傳入未知 min_role)，於匯入/啟動期即顯露問題。
+        raise ValueError(f"Unknown role: {min_role!r}")
+
+    async def _checker(ctx: TenantDep) -> TenantContext:
+        current = ROLE_ORDER.get(ctx.role, 0)
+        if current < required:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Insufficient role: requires '{min_role}' or higher",
+            )
+        return ctx
+
+    return _checker
 
 
 async def get_db(

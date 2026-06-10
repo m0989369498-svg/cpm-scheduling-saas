@@ -398,27 +398,71 @@ async def _seed_app_users() -> None:
 
     SessionLocal = database.SessionLocal
 
-    # (username, password, tenant_id, region)
+    # (username, password, tenant_id, region, role)
+    #   admin@tw / admin@cn  -> admin (完整權限；既有 demo 帳號)
+    #   editor@tw            -> editor (可寫；Feature 2 新增 demo 帳號)
+    #   viewer@tw            -> viewer (僅讀；Feature 2 新增 demo 帳號)
     users = [
-        ("admin@tw", "demo1234", "TENT-9981", "TW"),
-        ("admin@cn", "demo1234", "TENT-CN-002", "CN"),
+        ("admin@tw", "demo1234", "TENT-9981", "TW", "admin"),
+        ("admin@cn", "demo1234", "TENT-CN-002", "CN", "admin"),
+        ("editor@tw", "demo1234", "TENT-9981", "TW", "editor"),
+        ("viewer@tw", "demo1234", "TENT-9981", "TW", "viewer"),
     ]
     async with SessionLocal() as session:
         async with session.begin():
-            for username, password, tenant_id, region in users:
+            for username, password, tenant_id, region, role in users:
                 found = await session.execute(
                     select(AppUser).where(AppUser.username == username)
                 )
-                if found.scalar_one_or_none() is None:
+                existing = found.scalar_one_or_none()
+                if existing is None:
                     session.add(
                         AppUser(
                             tenant_id=tenant_id,
                             username=username,
                             password_hash=hash_password(password),
                             region=region,
+                            role=role,
                             is_active=True,
                         )
                     )
+                elif not getattr(existing, "role", None):
+                    # 既有帳號 (前一版種子無 role，或 ALTER 後欄位為 NULL/空) 冪等補齊。
+                    # 不改動既有密碼 (保留已輪替之 demo 密碼)。
+                    existing.role = role
+
+
+async def _ensure_app_users_role_column() -> None:
+    """冪等為「既有」app_users 表補上 role 欄位 (供既有 sqlite dev DB 升級)。
+
+    Feature 2 (Roles & Users) 新增 app_users.role。對「全新」DB，create_all /
+    init.sql 已含此欄位；但對「既有」cpm_dev.db，create_all 不會修改既存表，
+    故此處以 ALTER TABLE ADD COLUMN 補齊 —— 整段 try/except 包覆：
+
+      - 欄位已存在 (新庫 / 已升級) -> ALTER 失敗 (duplicate column) -> 略過。
+      - 表尚未建立 -> ALTER 失敗 -> 略過 (隨後 create_all 會建含 role 的新表)。
+
+    僅針對 sqlite (本機 dev) 執行：PostgreSQL 的 schema 由 db/init.sql 權威建立
+    且其 CREATE TABLE 已含 role 欄位，無需在此 ALTER。如此既有的 cpm_dev.db
+    可「無需重建」升級，且已輪替的 demo 密碼亦得保留。
+    """
+    if not is_sqlite():
+        return
+    from sqlalchemy import text
+
+    from app import database
+
+    try:
+        async with database.get_engine().begin() as conn:
+            await conn.execute(
+                text(
+                    "ALTER TABLE app_users "
+                    "ADD COLUMN role VARCHAR(20) DEFAULT 'admin'"
+                )
+            )
+        logger.info("app_users.role column added (live sqlite upgrade).")
+    except Exception as exc:  # noqa: BLE001 - 欄位已存在 / 表未建 皆視為正常
+        logger.info("app_users.role ALTER skipped (already present?): %s", exc)
 
 
 async def _bootstrap_database() -> None:
@@ -443,6 +487,13 @@ async def _bootstrap_database() -> None:
             logger.info("Core demo data seeded.")
         except Exception as exc:  # noqa: BLE001
             logger.warning("Core data seeding failed (continuing): %s", exc)
+
+    # 為既有 sqlite dev DB 冪等補上 app_users.role 欄位 (新庫為 no-op)。
+    # 須在帳號種子「之前」執行，種子才能寫入 / 補齊 role。
+    try:
+        await _ensure_app_users_role_column()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("app_users.role ensure skipped: %s", exc)
 
     # 帳號種子：所有模式皆執行 (resilient)。
     try:
@@ -522,6 +573,24 @@ app.include_router(analytics_router, prefix=_prefix)
 from app.routers.progress import router as progress_router  # noqa: E402
 
 app.include_router(progress_router, prefix=_prefix)
+
+# Phase 10 — 儀表板 (dashboard) / 使用者管理 (users) / 匯出 (exports) 路由器。
+# 以 best-effort 匯入並掛載：這些模組由 Phase 10 的其他工作項建立；若於某中間
+# 狀態尚未就緒則記錄並略過 (不中斷啟動)，待模組落地後即自動掛載。最後新增故置於
+# 既有路由器之後。
+for _mod_path, _label in (
+    ("app.routers.dashboard", "dashboard"),
+    ("app.routers.users", "users"),
+    ("app.routers.exports", "exports"),
+):
+    try:
+        import importlib
+
+        _module = importlib.import_module(_mod_path)
+        app.include_router(_module.router, prefix=_prefix)
+        logger.info("Mounted router: %s", _label)
+    except Exception as exc:  # noqa: BLE001 - 模組尚未就緒不中斷啟動
+        logger.warning("Router %s not mounted (continuing): %s", _label, exc)
 
 
 @app.get("/health", tags=["meta"])

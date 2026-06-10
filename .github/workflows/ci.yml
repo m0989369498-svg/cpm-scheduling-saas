@@ -7,6 +7,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Silence the "Node.js 20 actions are deprecated" warnings by forcing JS actions
+# onto the Node 24 runtime. Top-level (applies to all jobs); does not otherwise
+# change job behavior.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ===========================================================================
   # Backend — unit + DB integration tests against real Postgres 15 + Redis 7.
