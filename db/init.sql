@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS public.tasks (
     lf           INT          DEFAULT 0,                  -- 最晚完成 Latest Finish
     float_time   INT          DEFAULT 0,                  -- 寬裕時間 / 總時差
     is_critical  BOOLEAN      DEFAULT FALSE,              -- 是否位於要徑/關鍵路徑
+    resource_demands JSONB    NULL,                       -- 每任務資源需求 e.g. {"crane":1,"manpower":15}
     created_at   TIMESTAMPTZ  DEFAULT now(),
     updated_at   TIMESTAMPTZ  DEFAULT now(),
     UNIQUE (project_id, task_id)
@@ -243,6 +244,96 @@ ON CONFLICT (project_id, task_id, predecessor_task_id) DO NOTHING;
 INSERT INTO erp_integration.tenant_erp_config (tenant_id, erp_type, api_endpoint, is_active)
 VALUES ('TENT-CN-002', 'YONYOU_CN', '', TRUE)
 ON CONFLICT (tenant_id) DO NOTHING;
+
+-- =============================================================================
+-- 4.8 Phase 8 — 資源撫平 / 蒙地卡羅 新增表 (public schema，RLS ENABLE+FORCE)
+-- -----------------------------------------------------------------------------
+-- 決策：租戶排程資料 (資源上限 / 風險參數) 置於 public 並受 RLS 保護，
+--       與 tasks / projects 的隔離方式一致 (而非置於 erp_integration)。
+--       本區塊置於 GRANT 區塊之前，方能被「GRANT ON ALL TABLES」一併涵蓋。
+-- =============================================================================
+
+-- 4.8.1 專案資源上限 (project_resource_limits) --------------------------------
+--   每專案對每種資源 (resource_type，例：crane / manpower) 的可用上限。
+CREATE TABLE IF NOT EXISTS public.project_resource_limits (
+    id            BIGSERIAL    PRIMARY KEY,
+    project_id    VARCHAR(64)  NOT NULL REFERENCES public.projects(project_id) ON DELETE CASCADE,
+    tenant_id     VARCHAR(50)  NOT NULL,
+    resource_type VARCHAR(50)  NOT NULL,                  -- 資源類別 e.g. crane / manpower
+    max_capacity  INT          NOT NULL CHECK (max_capacity >= 0),  -- 可用上限
+    UNIQUE (project_id, resource_type)
+);
+
+-- 4.8.2 任務風險參數 (task_risk_parameters) — PERT 三點估計 -------------------
+--   樂觀 / 最可能 / 悲觀工期供蒙地卡羅抽樣；criticality_index 為模擬回寫之要徑機率。
+CREATE TABLE IF NOT EXISTS public.task_risk_parameters (
+    id                    BIGSERIAL    PRIMARY KEY,
+    project_id            VARCHAR(64)  NOT NULL REFERENCES public.projects(project_id) ON DELETE CASCADE,
+    tenant_id             VARCHAR(50)  NOT NULL,
+    task_id               VARCHAR(100) NOT NULL,
+    optimistic_duration   INT          NOT NULL CHECK (optimistic_duration >= 0),  -- 樂觀工期 a
+    most_likely_duration  INT          NOT NULL,                                    -- 最可能工期 m
+    pessimistic_duration  INT          NOT NULL,                                    -- 悲觀工期 b
+    criticality_index     REAL         NOT NULL DEFAULT 0.0,                        -- 要徑機率 [0,1]
+    UNIQUE (project_id, task_id)
+);
+
+-- 常用查詢索引 -----------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_resource_limits_project ON public.project_resource_limits(project_id);
+CREATE INDEX IF NOT EXISTS idx_resource_limits_tenant  ON public.project_resource_limits(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_risk_params_project     ON public.task_risk_parameters(project_id);
+CREATE INDEX IF NOT EXISTS idx_risk_params_tenant      ON public.task_risk_parameters(tenant_id);
+
+-- 4.8.3 Row Level Security — 與 tasks / projects 相同的多租戶政策 -------------
+ALTER TABLE public.project_resource_limits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.project_resource_limits FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_resource_limits ON public.project_resource_limits;
+CREATE POLICY tenant_isolation_resource_limits ON public.project_resource_limits
+    USING       (tenant_id = current_setting('app.current_tenant', true))
+    WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
+
+ALTER TABLE public.task_risk_parameters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.task_risk_parameters FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_risk_params ON public.task_risk_parameters;
+CREATE POLICY tenant_isolation_risk_params ON public.task_risk_parameters
+    USING       (tenant_id = current_setting('app.current_tenant', true))
+    WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
+
+-- 4.8.4 Phase 8 種子資料 (示範資源需求 / 上限 / 風險參數) ----------------------
+--   以 cpm (owner) 身分執行 => 繞過 RLS；冪等 (ON CONFLICT / WHERE NOT EXISTS)。
+--   PRJ-2026-TW-001：T-01/T-02/T-03 三任務並行時可能超出吊車 (crane) / 人力 (manpower) 上限。
+--   PRJ-2026-CN-001：C-01/C-02 給予合理示範值。
+-- 任務資源需求 (回填至 public.tasks.resource_demands) --------------------------
+UPDATE public.tasks SET resource_demands = '{"crane": 1, "manpower": 10}'::jsonb
+    WHERE project_id = 'PRJ-2026-TW-001' AND task_id = 'T-01' AND resource_demands IS NULL;
+UPDATE public.tasks SET resource_demands = '{"crane": 2, "manpower": 15}'::jsonb
+    WHERE project_id = 'PRJ-2026-TW-001' AND task_id = 'T-02' AND resource_demands IS NULL;
+UPDATE public.tasks SET resource_demands = '{"crane": 2, "manpower": 8}'::jsonb
+    WHERE project_id = 'PRJ-2026-TW-001' AND task_id = 'T-03' AND resource_demands IS NULL;
+UPDATE public.tasks SET resource_demands = '{"crane": 1, "manpower": 12}'::jsonb
+    WHERE project_id = 'PRJ-2026-CN-001' AND task_id = 'C-01' AND resource_demands IS NULL;
+UPDATE public.tasks SET resource_demands = '{"crane": 2, "manpower": 18}'::jsonb
+    WHERE project_id = 'PRJ-2026-CN-001' AND task_id = 'C-02' AND resource_demands IS NULL;
+
+-- 專案資源上限 ----------------------------------------------------------------
+INSERT INTO public.project_resource_limits (project_id, tenant_id, resource_type, max_capacity)
+VALUES
+    ('PRJ-2026-TW-001', 'TENT-9981',   'crane',    2),
+    ('PRJ-2026-TW-001', 'TENT-9981',   'manpower', 20),
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'crane',    2),
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'manpower', 20)
+ON CONFLICT (project_id, resource_type) DO NOTHING;
+
+-- 任務風險參數 (PERT 三點估計) ------------------------------------------------
+INSERT INTO public.task_risk_parameters
+    (project_id, tenant_id, task_id, optimistic_duration, most_likely_duration, pessimistic_duration)
+VALUES
+    ('PRJ-2026-TW-001', 'TENT-9981',   'T-01', 3, 5, 9),
+    ('PRJ-2026-TW-001', 'TENT-9981',   'T-02', 2, 3, 7),
+    ('PRJ-2026-TW-001', 'TENT-9981',   'T-03', 1, 2, 5),
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'C-01', 2, 4, 8),
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'C-02', 4, 6, 11)
+ON CONFLICT (project_id, task_id) DO NOTHING;
 
 -- =============================================================================
 -- 4.7 應用登入帳號表 app_users (public schema，「不」啟用 RLS)

@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     # --- 通知 (選填；空值代表 no-op / 僅記錄日誌) ---
     line_channel_access_token: str = ""  # LINE 推播 (台灣)
     dingtalk_webhook_url: str = ""       # 釘釘 webhook (中國大陸)
+    wecom_webhook_url: str = ""          # 企業微信 (WeCom) 群機器人 webhook (中國大陸)；env WECOM_WEBHOOK_URL
 
     # --- ERP 拋轉 worker ---
     erp_scan_interval_seconds: int = 300

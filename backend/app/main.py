@@ -50,8 +50,10 @@ async def _seed_core_data() -> None:
     from app.models.orm import (
         ErpConfig,
         Project,
+        ProjectResourceLimit,
         Task,
         TaskDependency,
+        TaskRiskParameter,
         Tenant,
     )
 
@@ -62,30 +64,49 @@ async def _seed_core_data() -> None:
         ("TENT-9981", "示範營造工程顧問", "TW"),
         ("TENT-CN-002", "示范建筑工程公司", "CN"),
     ]
-    # project_id -> (tenant_id, project_name, region, tasks, deps)
-    #   tasks: (task_id, task_name, duration, status, es, ef, ls, lf, float, critical)
-    #   deps : (task_id, predecessor_task_id)
+    # project_id -> (tenant_id, project_name, region, tasks, deps, limits, risk)
+    #   tasks  : (task_id, task_name, duration, status, es, ef, ls, lf, float, critical, demands)
+    #            demands: dict[str,int] | None  (每任務資源需求 e.g. {"crane":1,"manpower":15})
+    #   deps   : (task_id, predecessor_task_id)
+    #   limits : (resource_type, max_capacity)            專案資源上限
+    #   risk   : (task_id, optimistic, most_likely, pessimistic)  PERT 三點估計
     projects = {
         "PRJ-2026-TW-001": {
             "tenant_id": "TENT-9981",
             "project_name": "2026 示範建案工程排程",
             "region": "TW",
             "tasks": [
-                ("T-01", "基地開挖", 5, "COMPLETED", 0, 5, 0, 5, 0, True),
-                ("T-02", "一樓鋼筋綁紮", 3, "IN_PROGRESS", 5, 8, 5, 8, 0, True),
-                ("T-03", "一樓混凝土澆置", 2, "PENDING", 8, 10, 8, 10, 0, True),
+                ("T-01", "基地開挖", 5, "COMPLETED", 0, 5, 0, 5, 0, True,
+                    {"crane": 1, "manpower": 10}),
+                ("T-02", "一樓鋼筋綁紮", 3, "IN_PROGRESS", 5, 8, 5, 8, 0, True,
+                    {"crane": 2, "manpower": 15}),
+                ("T-03", "一樓混凝土澆置", 2, "PENDING", 8, 10, 8, 10, 0, True,
+                    {"crane": 2, "manpower": 8}),
             ],
             "deps": [("T-02", "T-01"), ("T-03", "T-02")],
+            "limits": [("crane", 2), ("manpower", 20)],
+            "risk": [
+                ("T-01", 3, 5, 9),
+                ("T-02", 2, 3, 7),
+                ("T-03", 1, 2, 5),
+            ],
         },
         "PRJ-2026-CN-001": {
             "tenant_id": "TENT-CN-002",
             "project_name": "2026 示范建筑工程排程",
             "region": "CN",
             "tasks": [
-                ("C-01", "土方开挖", 4, "COMPLETED", 0, 4, 0, 4, 0, True),
-                ("C-02", "基础施工", 6, "IN_PROGRESS", 4, 10, 4, 10, 0, True),
+                ("C-01", "土方开挖", 4, "COMPLETED", 0, 4, 0, 4, 0, True,
+                    {"crane": 1, "manpower": 12}),
+                ("C-02", "基础施工", 6, "IN_PROGRESS", 4, 10, 4, 10, 0, True,
+                    {"crane": 2, "manpower": 18}),
             ],
             "deps": [("C-02", "C-01")],
+            "limits": [("crane", 2), ("manpower", 20)],
+            "risk": [
+                ("C-01", 2, 4, 8),
+                ("C-02", 4, 6, 11),
+            ],
         },
     }
     # (tenant_id, erp_type, api_endpoint)
@@ -123,13 +144,15 @@ async def _seed_core_data() -> None:
                     lf,
                     ft,
                     crit,
+                    demands,
                 ) in p["tasks"]:
                     found = await session.execute(
                         select(Task).where(
                             Task.project_id == project_id, Task.task_id == task_id
                         )
                     )
-                    if found.scalar_one_or_none() is None:
+                    existing = found.scalar_one_or_none()
+                    if existing is None:
                         session.add(
                             Task(
                                 project_id=project_id,
@@ -144,8 +167,12 @@ async def _seed_core_data() -> None:
                                 lf=lf,
                                 float_time=ft,
                                 is_critical=crit,
+                                resource_demands=demands,
                             )
                         )
+                    elif existing.resource_demands is None and demands is not None:
+                        # 既有資料 (前一版種子無 resource_demands) 冪等回填示範需求。
+                        existing.resource_demands = demands
                 for task_id, pred in p["deps"]:
                     found = await session.execute(
                         select(TaskDependency).where(
@@ -161,6 +188,44 @@ async def _seed_core_data() -> None:
                                 tenant_id=p["tenant_id"],
                                 task_id=task_id,
                                 predecessor_task_id=pred,
+                            )
+                        )
+
+                # Phase 8 — 專案資源上限 (冪等：project_id + resource_type 唯一)
+                for resource_type, max_capacity in p.get("limits", []):
+                    found = await session.execute(
+                        select(ProjectResourceLimit).where(
+                            ProjectResourceLimit.project_id == project_id,
+                            ProjectResourceLimit.resource_type == resource_type,
+                        )
+                    )
+                    if found.scalar_one_or_none() is None:
+                        session.add(
+                            ProjectResourceLimit(
+                                project_id=project_id,
+                                tenant_id=p["tenant_id"],
+                                resource_type=resource_type,
+                                max_capacity=max_capacity,
+                            )
+                        )
+
+                # Phase 8 — 任務風險參數 / PERT 三點估計 (冪等：project_id + task_id 唯一)
+                for task_id, a, m, b in p.get("risk", []):
+                    found = await session.execute(
+                        select(TaskRiskParameter).where(
+                            TaskRiskParameter.project_id == project_id,
+                            TaskRiskParameter.task_id == task_id,
+                        )
+                    )
+                    if found.scalar_one_or_none() is None:
+                        session.add(
+                            TaskRiskParameter(
+                                project_id=project_id,
+                                tenant_id=p["tenant_id"],
+                                task_id=task_id,
+                                optimistic_duration=a,
+                                most_likely_duration=m,
+                                pessimistic_duration=b,
                             )
                         )
 
@@ -303,6 +368,14 @@ app.include_router(schedule_router, prefix=_prefix)
 app.include_router(projects_router, prefix=_prefix)
 app.include_router(tasks_router, prefix=_prefix)
 app.include_router(erp_router, prefix=_prefix)
+
+# Phase 8 — 資源撫平 (resources) 與風險分析 (analytics) 路由器。
+# 以模組路徑匯入並掛載於同一前綴之下；最後新增故置於既有路由器之後。
+from app.routers.resources import router as resources_router  # noqa: E402
+from app.routers.analytics import router as analytics_router  # noqa: E402
+
+app.include_router(resources_router, prefix=_prefix)
+app.include_router(analytics_router, prefix=_prefix)
 
 
 @app.get("/health", tags=["meta"])

@@ -306,6 +306,13 @@ tr.critical-row td {
   background: rgba(255, 255, 255, 0.6);
 }
 
+/* ---- 甘特圖：資源超載警示帶（Phase 8 資源撫平）---- */
+.gantt-over-capacity {
+  /* 半透明紅色警示區，橫跨所有任務列、疊加於對應日欄位之上 */
+  background: rgba(231, 76, 60, 0.16);
+  pointer-events: none;
+}
+
 /* 拖曳即時預覽標籤 N 天 */
 .gantt-drag-preview {
   background: #2c3e50;

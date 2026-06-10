@@ -49,6 +49,9 @@ class TaskResult(TaskDefinition):
     lf: int = 0
     float_time: int = 0
     is_critical: bool = False
+    # 每任務資源需求（resource_demands），例：{"crane": 1, "manpower": 15}。
+    # 供資源撫平（resource leveling）與 Gantt 視覺化使用；None 表未設定。
+    resource_demands: dict[str, int] | None = None
 
 
 class ProjectBase(BaseModel):
@@ -98,6 +101,8 @@ class TaskCreate(BaseModel):
     duration: int = Field(ge=0)
     predecessors: list[str] = Field(default_factory=list)
     status: str = "PENDING"
+    # 每任務資源需求（選填），例：{"crane": 1, "manpower": 15}。
+    resource_demands: dict[str, int] | None = None
 
 
 class TaskDurationUpdate(BaseModel):
@@ -113,6 +118,8 @@ class TaskUpdate(BaseModel):
     duration: int | None = Field(default=None, ge=0)
     status: str | None = None
     predecessors: list[str] | None = None
+    # 每任務資源需求（選填）；None 表示不變更。
+    resource_demands: dict[str, int] | None = None
 
 
 class ErpSyncRequest(BaseModel):

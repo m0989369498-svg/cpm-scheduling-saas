@@ -4,6 +4,8 @@ import { t } from '../i18n';
 import { reportUrl } from '../api/client';
 import GanttChart from './GanttChart';
 import ProjectForm from './ProjectForm';
+import ResourcePanel from './ResourcePanel';
+import RiskPanel from './RiskPanel';
 
 /**
  * ScheduleBoard 工期排程主控板
@@ -44,6 +46,7 @@ export default function ScheduleBoard() {
     currentProject,
     loading,
     error,
+    leveling,
     setTenant,
     setRegion,
     loadProjects,
@@ -69,6 +72,8 @@ export default function ScheduleBoard() {
   });
   // 建立專案模態開關
   const [showProjectForm, setShowProjectForm] = useState(false);
+  // Phase 8 分頁：'schedule'（排程/甘特圖）| 'resources'（資源撫平）| 'risk'（風險分析）
+  const [activeTab, setActiveTab] = useState('schedule');
 
   // 掛載時載入專案清單
   useEffect(() => {
@@ -102,6 +107,14 @@ export default function ScheduleBoard() {
       .map((tk) => tk.task_id);
     return crit.join(' → ');
   }, [tasks]);
+
+  // 資源撫平超載日（傳入甘特圖繪製紅色警示帶）；無撫平結果時為 undefined（甘特圖不繪製）
+  const overCapacityDays = useMemo(() => {
+    if (leveling && Array.isArray(leveling.over_capacity_days)) {
+      return leveling.over_capacity_days;
+    }
+    return undefined;
+  }, [leveling]);
 
   // ---- 事件處理 ----
 
@@ -359,6 +372,53 @@ export default function ScheduleBoard() {
             </button>
           </div>
 
+          {/* ===== Phase 8 分頁切換：排程 / 資源撫平 / 風險分析 ===== */}
+          <div
+            style={{
+              display: 'flex',
+              gap: '4px',
+              borderBottom: '2px solid #e0e0e0',
+              marginBottom: '16px',
+            }}
+          >
+            {[
+              { key: 'schedule', label: `${t(region, 'task')} / ${t(region, 'criticalPath')}` },
+              { key: 'resources', label: t(region, 'resourceLeveling') },
+              { key: 'risk', label: t(region, 'riskAnalysis') },
+            ].map((tab) => {
+              const active = activeTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  style={{
+                    ...btnStyle,
+                    background: active ? '#2c3e50' : '#fff',
+                    color: active ? '#fff' : '#2c3e50',
+                    border: '1px solid #e0e0e0',
+                    borderBottom: active ? '2px solid #2c3e50' : '2px solid transparent',
+                    borderTopLeftRadius: '4px',
+                    borderTopRightRadius: '4px',
+                    borderBottomLeftRadius: 0,
+                    borderBottomRightRadius: 0,
+                    marginBottom: '-2px',
+                  }}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* ===== 資源撫平分頁 ===== */}
+          {activeTab === 'resources' && <ResourcePanel region={region} />}
+
+          {/* ===== 風險分析分頁 ===== */}
+          {activeTab === 'risk' && <RiskPanel region={region} />}
+
+          {/* ===== 排程分頁（甘特圖 + 任務表格 + 新增任務） ===== */}
+          {activeTab === 'schedule' && (
+          <>
           {/* ===== 甘特圖 ===== */}
           <div style={{ marginBottom: '20px' }}>
             {tasks.length > 0 ? (
@@ -366,6 +426,7 @@ export default function ScheduleBoard() {
                 tasks={tasks}
                 region={region}
                 onTaskDurationChange={(id, d) => changeTaskDuration(id, d)}
+                overCapacityDays={overCapacityDays}
               />
             ) : (
               <div style={{ padding: '24px', textAlign: 'center', color: '#999', border: '1px dashed #ddd', borderRadius: '6px' }}>
@@ -513,6 +574,8 @@ export default function ScheduleBoard() {
               </button>
             </div>
           </div>
+          </>
+          )}
         </>
       )}
 

@@ -12,6 +12,9 @@ import { t } from '../i18n';
  *       依 dayWidth(30px=1天) 對齊、最小工期 1；放開時若對齊後的工期
  *       與原工期不同，呼叫 onTaskDurationChange(task_id, newDuration)。
  *       未提供時維持原本（不可拖曳）渲染。
+ *   overCapacityDays? : list[int]   (選用，Phase 8 資源撫平)
+ *       提供時：於這些「日」欄位疊加半透明紅色警示帶（資源衝突視覺化），
+ *       橫跨所有任務列；未提供（或空陣列）時維持原本渲染。
  *
  * 繪製規則 (沿用原型外觀)：
  *   - 每一列代表一個任務 (task)
@@ -35,8 +38,25 @@ function isCritical(task) {
   return Boolean(task.is_critical) || task.float_time === 0;
 }
 
-export default function GanttChart({ tasks = [], region = 'TW', onTaskDurationChange }) {
+export default function GanttChart({
+  tasks = [],
+  region = 'TW',
+  onTaskDurationChange,
+  overCapacityDays,
+}) {
   const draggable = typeof onTaskDurationChange === 'function';
+
+  // 資源超載警示日（Phase 8）：去重後的整數集合；未提供時為空集合（不繪製）
+  const overDaysSet = React.useMemo(() => {
+    const set = new Set();
+    if (Array.isArray(overCapacityDays)) {
+      overCapacityDays.forEach((d) => {
+        const n = Number(d);
+        if (Number.isFinite(n)) set.add(n);
+      });
+    }
+    return set;
+  }, [overCapacityDays]);
 
   // 拖曳狀態：{ taskId, es, startX, originalDuration, previewDuration }
   const [drag, setDrag] = useState(null);
@@ -155,32 +175,62 @@ export default function GanttChart({ tasks = [], region = 'TW', onTaskDurationCh
             background: '#f7f9fc',
           }}
         >
-          {dayTicks.map((d) => (
-            <div
-              key={`tick-${d}`}
-              style={{
-                position: 'absolute',
-                left: d * DAY_WIDTH,
-                top: 0,
-                width: DAY_WIDTH,
-                height: '26px',
-                borderLeft: '1px solid #ececec',
-                fontSize: '10px',
-                color: '#999',
-                textAlign: 'left',
-                paddingLeft: '2px',
-                boxSizing: 'border-box',
-                lineHeight: '26px',
-              }}
-            >
-              {d}
-            </div>
-          ))}
+          {dayTicks.map((d) => {
+            const over = overDaysSet.has(d);
+            return (
+              <div
+                key={`tick-${d}`}
+                style={{
+                  position: 'absolute',
+                  left: d * DAY_WIDTH,
+                  top: 0,
+                  width: DAY_WIDTH,
+                  height: '26px',
+                  borderLeft: '1px solid #ececec',
+                  fontSize: '10px',
+                  color: over ? '#c0392b' : '#999',
+                  fontWeight: over ? 700 : 400,
+                  textAlign: 'left',
+                  paddingLeft: '2px',
+                  boxSizing: 'border-box',
+                  lineHeight: '26px',
+                  background: over ? 'rgba(231, 76, 60, 0.14)' : 'transparent',
+                }}
+                title={over ? `${t(region, 'overCapacity')} · ${t(region, 'day')} ${d}` : undefined}
+              >
+                {d}
+              </div>
+            );
+          })}
         </div>
       </div>
 
       {/* ===== 任務列 (bars) ===== */}
-      <div>
+      <div style={{ position: 'relative' }}>
+        {/* 資源超載警示帶（Phase 8）：橫跨所有任務列，疊加於指定日欄位之上 */}
+        {overDaysSet.size > 0 &&
+          dayTicks
+            .filter((d) => overDaysSet.has(d))
+            .map((d) => (
+              <div
+                key={`over-${d}`}
+                className="gantt-over-capacity"
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: LABEL_WIDTH + d * DAY_WIDTH,
+                  width: DAY_WIDTH,
+                  height: tasks.length * ROW_HEIGHT,
+                  background: 'rgba(231, 76, 60, 0.16)',
+                  borderLeft: '1px dashed rgba(192, 57, 43, 0.55)',
+                  borderRight: '1px dashed rgba(192, 57, 43, 0.55)',
+                  pointerEvents: 'none',
+                  zIndex: 3,
+                }}
+                title={`${t(region, 'overCapacity')} · ${t(region, 'day')} ${d}`}
+              />
+            ))}
         {tasks.map((task, idx) => {
           const critical = isCritical(task);
           const es = Number(task.es) || 0;

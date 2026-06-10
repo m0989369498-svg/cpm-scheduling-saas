@@ -140,6 +140,46 @@ export async function syncErp(projectId, syncType = 'SCHEDULE_PUSH') {
   return res.data
 }
 
+// ---- Phase 8：資源撫平 (resource leveling) ----
+
+// 取得專案資源設定（資源上限 + 各任務資源需求）
+export async function getResources(projectId) {
+  const res = await apiClient.get(`/projects/${encodeURIComponent(projectId)}/resources`)
+  return res.data
+}
+
+// 設定專案資源（upsert 資源上限 + 各任務 resource_demands）
+export async function setResources(projectId, body) {
+  const res = await apiClient.put(`/projects/${encodeURIComponent(projectId)}/resources`, body)
+  return res.data
+}
+
+// 執行資源撫平（回傳 LevelingResult，含撫平後工期/逐日載荷/超載日）
+export async function levelResources(projectId) {
+  const res = await apiClient.post(`/projects/${encodeURIComponent(projectId)}/level`)
+  return res.data
+}
+
+// ---- Phase 8：蒙地卡羅風險分析 (Monte Carlo) ----
+
+// 取得三點估計參數（list[RiskParam]）
+export async function getRisk(projectId) {
+  const res = await apiClient.get(`/projects/${encodeURIComponent(projectId)}/risk`)
+  return res.data
+}
+
+// 設定三點估計參數（upsert task_risk_parameters）
+export async function setRisk(projectId, body) {
+  const res = await apiClient.put(`/projects/${encodeURIComponent(projectId)}/risk`, body)
+  return res.data
+}
+
+// 執行蒙地卡羅模擬（body SimulationRequest）-> SimulationResult
+export async function simulate(projectId, body) {
+  const res = await apiClient.post(`/projects/${encodeURIComponent(projectId)}/simulate`, body)
+  return res.data
+}
+
 // 報表下載 URL（供 window.open / <a href> 直接開啟 PDF）
 export function reportUrl(projectId) {
   const base = API_BASE_URL.replace(/\/$/, '')

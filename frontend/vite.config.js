@@ -8,6 +8,13 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    // 公開通道 (cloudflared) 會以隧道網域作為 Host header；允許任意 host 以免被擋。
+    allowedHosts: true,
+    // 同源代理：瀏覽器打 /api/* 由 dev server 轉發到後端，
+    // 遠端使用者才不會去打「自己的 localhost:8000」。
+    proxy: {
+      '/api': { target: 'http://localhost:8000', changeOrigin: true },
+    },
   },
   preview: {
     host: true,

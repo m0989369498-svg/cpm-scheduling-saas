@@ -17,6 +17,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -140,6 +141,10 @@ class Task(Base):
     is_critical: Mapped[bool] = mapped_column(
         Boolean, server_default=text("false")
     )  # 是否位於要徑 / 關鍵路徑
+    # 每任務資源需求 (resource_demands)，例：{"crane": 1, "manpower": 15}。
+    # 供資源撫平 (RCS / resource leveling) 引擎與 Gantt 視覺化使用；NULL 表未設定。
+    # 採可攜 JSON 型別：PostgreSQL -> JSONB、sqlite -> JSON。
+    resource_demands: Mapped[dict | None] = mapped_column(JSON_PORTABLE)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP_TZ, server_default=func.now()
     )
@@ -168,6 +173,68 @@ class TaskDependency(Base):
     tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
     task_id: Mapped[str] = mapped_column(String(100), nullable=False)
     predecessor_task_id: Mapped[str] = mapped_column(String(100), nullable=False)
+
+
+class ProjectResourceLimit(Base):
+    """專案資源上限 (project_resource_limits)。
+
+    每個專案對每種資源 (resource_type，例：crane / manpower) 設定可用上限
+    (max_capacity)，供資源撫平 (resource leveling) 偵測逐日超載。
+    受 RLS 保護 (與 tasks / projects 一致)，故置於 public schema。
+    """
+
+    __tablename__ = "project_resource_limits"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "resource_type", name="uq_resource_limit_project_type"
+        ),
+        CheckConstraint("max_capacity >= 0", name="ck_resource_limit_capacity_nonneg"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    max_capacity: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class TaskRiskParameter(Base):
+    """任務風險參數 (task_risk_parameters)。
+
+    每個任務的三點估計 (PERT)：樂觀 / 最可能 / 悲觀工期，供蒙地卡羅模擬
+    (Monte Carlo) 抽樣使用；模擬後將要徑機率 (criticality_index) 回寫此表。
+    受 RLS 保護 (與 tasks / projects 一致)，故置於 public schema。
+    """
+
+    __tablename__ = "task_risk_parameters"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "task_id", name="uq_risk_param_project_task"
+        ),
+        CheckConstraint(
+            "optimistic_duration >= 0", name="ck_risk_param_optimistic_nonneg"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    optimistic_duration: Mapped[int] = mapped_column(Integer, nullable=False)
+    most_likely_duration: Mapped[int] = mapped_column(Integer, nullable=False)
+    pessimistic_duration: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 要徑機率 (criticality index)：模擬中該任務落在要徑的比例 [0,1]。
+    criticality_index: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default=text("0.0")
+    )
 
 
 # ---------------------------------------------------------------------------

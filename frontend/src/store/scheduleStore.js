@@ -51,6 +51,16 @@ export const useScheduleStore = create((set, get) => ({
   loading: false,
   error: null,
 
+  // ---- Phase 8：資源撫平 + 蒙地卡羅 ----
+  // resources  : ResourceConfig { limits:[{resource_type,max_capacity}], demands:{taskId:{res:qty}} } | null
+  // leveling   : LevelingResult（含 over_capacity_days 供甘特圖警示帶） | null
+  // risk       : list[RiskParam]（三點估計 + criticality_index）
+  // simulation : SimulationResult（s_curve / p10/p50/p90 / criticality / on_time_probability） | null
+  resources: null,
+  leveling: null,
+  risk: [],
+  simulation: null,
+
   // 登入：以帳號/密碼換取 JWT。成功後設定 token + 由權杖回傳的 tenantId/region + username，
   // 並將 token 持久化至 localStorage（攔截器與重新整理後復原皆使用）。
   // 同時持久化 tenantId/region，使標頭回退與 token 一致。
@@ -80,14 +90,34 @@ export const useScheduleStore = create((set, get) => ({
   // 登出：清除權杖/使用者與當前專案狀態，並移除 localStorage 權杖。
   logout: () => {
     removeLS(LS_TOKEN_KEY)
-    set({ token: null, username: null, currentProject: null, projects: [], error: null })
+    set({
+      token: null,
+      username: null,
+      currentProject: null,
+      projects: [],
+      error: null,
+      // 重置 Phase 8 分析狀態
+      resources: null,
+      leveling: null,
+      risk: [],
+      simulation: null,
+    })
   },
 
   // 切換租戶並持久化（攔截器下次請求即帶上新 X-Tenant-Id）。
   // 同時清空舊租戶的專案/清單，避免顯示到其他租戶的殘留資料（RLS 隔離）。
   setTenant: (id) => {
     writeLS(LS_TENANT_KEY, id)
-    set({ tenantId: id, currentProject: null, projects: [] })
+    set({
+      tenantId: id,
+      currentProject: null,
+      projects: [],
+      // 切換租戶：清空 Phase 8 分析狀態（避免跨租戶殘留）
+      resources: null,
+      leveling: null,
+      risk: [],
+      simulation: null,
+    })
   },
 
   // 切換區域並持久化（驅動 i18n 與 X-Region 標頭）
@@ -111,7 +141,8 @@ export const useScheduleStore = create((set, get) => ({
 
   // 載入單一專案（含 CPM 結果），設為當前專案
   loadProject: async (id) => {
-    set({ loading: true, error: null })
+    // 切換專案：重置 Phase 8 分析狀態（撫平/模擬結果不可跨專案沿用）
+    set({ loading: true, error: null, resources: null, leveling: null, risk: [], simulation: null })
     try {
       const project = await api.getProject(id)
       set({ currentProject: project, loading: false })
@@ -124,7 +155,7 @@ export const useScheduleStore = create((set, get) => ({
 
   // 建立專案，設為當前並刷新清單
   createProject: async (payload) => {
-    set({ loading: true, error: null })
+    set({ loading: true, error: null, resources: null, leveling: null, risk: [], simulation: null })
     try {
       const project = await api.createProject(payload)
       set({ currentProject: project, loading: false })
@@ -193,6 +224,100 @@ export const useScheduleStore = create((set, get) => ({
       const result = await api.syncErp(cur.project_id, syncType)
       set({ loading: false })
       return result
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // ---- Phase 8：資源撫平 (resource leveling) ----
+
+  // 載入當前專案資源設定（資源上限 + 各任務需求）
+  loadResources: async () => {
+    const cur = get().currentProject
+    if (!cur) return null
+    set({ loading: true, error: null })
+    try {
+      const resources = await api.getResources(cur.project_id)
+      set({ resources, loading: false })
+      return resources
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 儲存資源設定（upsert 上限 + 各任務 resource_demands）；回傳並更新 store.resources
+  saveResources: async (cfg) => {
+    const cur = get().currentProject
+    if (!cur) return null
+    set({ loading: true, error: null })
+    try {
+      const resources = await api.setResources(cur.project_id, cfg)
+      set({ resources, loading: false })
+      return resources
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 執行資源撫平；結果（含 over_capacity_days）存入 store.leveling 供甘特圖警示帶
+  runLeveling: async () => {
+    const cur = get().currentProject
+    if (!cur) return null
+    set({ loading: true, error: null })
+    try {
+      const leveling = await api.levelResources(cur.project_id)
+      set({ leveling, loading: false })
+      return leveling
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // ---- Phase 8：蒙地卡羅風險分析 (Monte Carlo) ----
+
+  // 載入三點估計參數（list[RiskParam]）
+  loadRisk: async () => {
+    const cur = get().currentProject
+    if (!cur) return []
+    set({ loading: true, error: null })
+    try {
+      const risk = await api.getRisk(cur.project_id)
+      set({ risk: Array.isArray(risk) ? risk : [], loading: false })
+      return risk
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 儲存三點估計參數（upsert）；回傳並更新 store.risk
+  saveRisk: async (list) => {
+    const cur = get().currentProject
+    if (!cur) return []
+    set({ loading: true, error: null })
+    try {
+      const risk = await api.setRisk(cur.project_id, list)
+      set({ risk: Array.isArray(risk) ? risk : [], loading: false })
+      return risk
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 執行蒙地卡羅模擬（req SimulationRequest）；結果存入 store.simulation
+  runSimulation: async (req = {}) => {
+    const cur = get().currentProject
+    if (!cur) return null
+    set({ loading: true, error: null })
+    try {
+      const simulation = await api.simulate(cur.project_id, req)
+      set({ simulation, loading: false })
+      return simulation
     } catch (err) {
       set({ error: extractError(err), loading: false })
       throw err

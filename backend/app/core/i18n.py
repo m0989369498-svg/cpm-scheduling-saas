@@ -43,6 +43,10 @@ I18N: dict[str, dict] = {
         "projectDuration": "專案總工期",
         "loading": "載入中…",
         "error": "錯誤",
+        # Phase 8 — 風險分析 / 蒙地卡羅（用於風險卡片、PDF 報表）
+        "criticalityIndex": "要徑機率",
+        "riskProvision": "風險預警備料",
+        "onTimeProbability": "準時完工機率",
         "statuses": {
             "PENDING": "待辦",
             "IN_PROGRESS": "進行中",
@@ -75,6 +79,10 @@ I18N: dict[str, dict] = {
         "projectDuration": "项目总工期",
         "loading": "加载中…",
         "error": "错误",
+        # Phase 8 — 风险分析 / 蒙特卡洛（用于风险卡片、PDF 报表）
+        "criticalityIndex": "关键路径概率",
+        "riskProvision": "风险预警备料",
+        "onTimeProbability": "按时完工概率",
         "statuses": {
             "PENDING": "待办",
             "IN_PROGRESS": "进行中",
