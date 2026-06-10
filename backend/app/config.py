@@ -5,9 +5,10 @@
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 
 from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 logger = logging.getLogger("cpm.config")
 
@@ -23,8 +24,16 @@ class Settings(BaseSettings):
     app_env: str = "development"
     api_v1_prefix: str = "/api/v1"
 
-    # CORS 來源：以逗號分隔的字串解析為 list[str]
-    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8080"]
+    # CORS 來源：以逗號分隔的字串解析為 list[str]。
+    # Annotated[..., NoDecode]：關閉 pydantic-settings 對此複合欄位的「JSON 預解析」。
+    # 否則 EnvSettingsSource 會在 validator 之前先對 CORS_ORIGINS 做 json.loads()，
+    # 而 docker-compose/.env 給的是逗號分隔字串 (非 JSON)，會 JSONDecodeError →
+    # SettingsError，導致後端容器一啟動就崩 (compose-e2e 即因此 502)。加上 NoDecode
+    # 後，原始字串會原封不動交給下方 mode="before" 的 _split_cors_origins 自行切分。
+    cors_origins: Annotated[list[str], NoDecode] = [
+        "http://localhost:5173",
+        "http://localhost:8080",
+    ]
 
     # --- 地區 (台灣 TW / 中國大陸 CN) ---
     default_region: str = "TW"
