@@ -243,13 +243,13 @@ All variables live in `.env` (see `.env.example`). Backend field names are snake
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgresql+asyncpg://cpm:cpm_password@postgres:5432/cpm_saas` | Async Postgres DSN (asyncpg). |
+| `DATABASE_URL` | `postgresql+asyncpg://cpm_app:cpm_app_password@postgres:5432/cpm_saas` | Async Postgres DSN (asyncpg). App connects as the non-superuser `cpm_app` so RLS applies. |
 | `REDIS_URL` | `redis://redis:6379/0` | Redis connection (async client, best-effort cache). |
 | `APP_ENV` | `development` | Environment marker. |
 | `API_V1_PREFIX` | `/api/v1` | REST API prefix. |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:8080` | Comma-separated allowed origins (parsed to a list). |
 | `DEFAULT_REGION` | `TW` | Fallback region when `X-Region` header is absent. |
-| `JWT_SECRET` | `dev-secret-change-me` | HMAC secret for signing JWTs. **Change in production.** |
+| `JWT_SECRET` | `dev-only-insecure-…` | HMAC secret for signing JWTs (>=32 bytes). **Change in production** — generate via `python -c "import secrets; print(secrets.token_hex(32))"`. |
 | `JWT_ALGORITHM` | `HS256` | JWT signing algorithm. |
 | `JWT_EXPIRE_MINUTES` | `720` | Access-token lifetime (minutes; 720 = 12h). |
 | `AUTH_REQUIRED` | `false` | `true` ⇒ every `/api/v1` endpoint requires `Authorization: Bearer`. `false` ⇒ header mode (`X-Tenant-Id`) still works. compose sets `true`. |

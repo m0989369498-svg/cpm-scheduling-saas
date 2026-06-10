@@ -4,8 +4,12 @@
 """
 from __future__ import annotations
 
-from pydantic import field_validator
+import logging
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger("cpm.config")
 
 
 class Settings(BaseSettings):
@@ -26,8 +30,9 @@ class Settings(BaseSettings):
     default_region: str = "TW"
 
     # --- JWT 認證 (功能旗標；預設關閉以維持既有 header 模式相容) ---
-    # jwt_secret：HS256 簽章密鑰 (正式環境務必由 JWT_SECRET 覆寫)。
-    jwt_secret: str = "dev-secret-change-me"          # env JWT_SECRET
+    # jwt_secret：HS256 簽章密鑰 (正式環境務必由 JWT_SECRET 覆寫為 >=32 bytes 隨機值)。
+    # 預設值僅供本機開發；長度 >=32 bytes 以避免 PyJWT 弱密鑰警告。
+    jwt_secret: str = "dev-only-insecure-secret-DO-NOT-USE-IN-PROD-change-me"  # env JWT_SECRET
     jwt_algorithm: str = "HS256"                      # env JWT_ALGORITHM
     jwt_expire_minutes: int = 720                     # env JWT_EXPIRE_MINUTES
     # auth_required：True => 端點必須帶 Bearer token；False (預設) => 允許 header 模式。
@@ -64,6 +69,24 @@ class Settings(BaseSettings):
             # 去除空白並過濾空項
             return [item.strip() for item in v.split(",") if item.strip()]
         return v
+
+    @model_validator(mode="after")
+    def _warn_weak_jwt_secret(self):
+        """正式環境若使用弱 / 預設 JWT 密鑰則記錄警告 (不中斷啟動)。"""
+        weak_defaults = {
+            "dev-secret-change-me",
+            "change-me-in-prod",
+            "dev-only-insecure-secret-DO-NOT-USE-IN-PROD-change-me",
+        }
+        if self.app_env.lower() in {"production", "prod"} and (
+            len(self.jwt_secret.encode()) < 32 or self.jwt_secret in weak_defaults
+        ):
+            logger.warning(
+                "JWT_SECRET 偏弱 (app_env=%s)；正式環境請改用 >=32 bytes 的高強度隨機值，"
+                '例如：python -c "import secrets; print(secrets.token_hex(32))"',
+                self.app_env,
+            )
+        return self
 
 
 # 單例：整個應用共用同一份設定

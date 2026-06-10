@@ -140,6 +140,32 @@ def _dispose_sqlite_engines() -> None:
         pass
 
 
+def _unlink_with_retry(path: str, attempts: int = 10, delay: float = 0.05) -> None:
+    """刪除暫存 sqlite 檔，對 Windows 句柄釋放延遲做短暫重試。
+
+    即使已 dispose engine，aiosqlite 於背景執行緒關閉底層 sqlite3 連線後，OS 釋放
+    檔案句柄可能仍有極短延遲；緊接著 os.unlink 偶發 PermissionError
+    ([WinError 32])。先 gc 收集殘留的連線/wrapper，再以小間隔重試數次即可穩定刪除。
+    """
+    import gc
+    import time
+
+    gc.collect()
+    for _ in range(attempts):
+        try:
+            os.unlink(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            time.sleep(delay)
+    # 最後再試一次；仍失敗則靜默放棄 (不讓 teardown 失敗)。
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 @pytest.fixture(scope="module")
 def client():
     """module 範圍 TestClient；先把 DB 綁到 sqlite 暫存檔，再以 with 進入觸發 lifespan
@@ -147,12 +173,10 @@ def client():
     _rebind_sqlite_engine()
     with TestClient(app) as c:
         yield c
-    # 先 dispose 綁定 sqlite 檔的 async engine，Windows 才能釋放檔案句柄。
+    # 先 dispose 綁定 sqlite 檔的 async engine，Windows 才能釋放檔案句柄；再刪暫存檔
+    # (對句柄釋放延遲做短暫重試，避免殘留 cpm_auth_test_*.db)。
     _dispose_sqlite_engines()
-    try:
-        os.unlink(_DB_PATH)
-    except OSError:
-        pass
+    _unlink_with_retry(_DB_PATH)
 
 
 # --------------------------------------------------------------------------- #

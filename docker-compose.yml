@@ -63,7 +63,9 @@ services:
       DEFAULT_REGION: TW
       # --- JWT 認證 (生產/compose 強制啟用 Bearer Token) ---
       AUTH_REQUIRED: "true"
-      JWT_SECRET: change-me-in-prod
+      # 正式環境請於主機環境或 .env 設定高強度 JWT_SECRET (>=32 bytes 隨機值)；
+      # 下方僅為未設定時的本機開發回退值。
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-DO-NOT-USE-IN-PROD-change-me}
       JWT_EXPIRE_MINUTES: "720"
       LINE_CHANNEL_ACCESS_TOKEN: ""
       DINGTALK_WEBHOOK_URL: ""
@@ -102,7 +104,9 @@ services:
       DEFAULT_REGION: TW
       # --- JWT 認證 (與 backend 共用同一把 secret) ---
       AUTH_REQUIRED: "true"
-      JWT_SECRET: change-me-in-prod
+      # 正式環境請於主機環境或 .env 設定高強度 JWT_SECRET (>=32 bytes 隨機值)；
+      # 下方僅為未設定時的本機開發回退值。
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-DO-NOT-USE-IN-PROD-change-me}
       JWT_EXPIRE_MINUTES: "720"
       LINE_CHANNEL_ACCESS_TOKEN: ""
       DINGTALK_WEBHOOK_URL: ""
