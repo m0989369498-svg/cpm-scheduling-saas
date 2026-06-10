@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# 虛擬環境
+.venv/
+venv/
+env/
+
+# 環境變數與機密
+.env
+.env.*
+
+# IDE / 編輯器
+.idea/
+.vscode/
+*.swp
+
+# 版本控制
+.git/
+.gitignore
+
+# 測試與文件 (不需進入正式映像檔)
+tests/
+README.md

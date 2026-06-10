@@ -1,0 +1,465 @@
+/* CPM 工程排程 SaaS — 全域樣式 */
+
+:root {
+  --color-critical: #e74c3c;
+  --color-normal: #3498db;
+  --color-bg: #f5f6f8;
+  --color-panel: #ffffff;
+  --color-border: #e0e3e8;
+  --color-text: #2c3e50;
+  --color-muted: #7f8c8d;
+  --color-accent: #2c7be5;
+  --radius: 6px;
+  --day-width: 30px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: 'Microsoft JhengHei', 'PingFang TC', 'Noto Sans CJK TC', 'Segoe UI', Arial, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.board {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.board-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.board-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.panel {
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 18px;
+}
+
+.field {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field label {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+select,
+input[type='text'],
+input[type='number'] {
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  background: #fff;
+  color: var(--color-text);
+}
+
+input[type='number'] {
+  width: 80px;
+}
+
+button {
+  padding: 7px 14px;
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
+  color: #fff;
+  border-radius: var(--radius);
+  font-size: 14px;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+button:hover {
+  opacity: 0.88;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: #fff;
+  color: var(--color-accent);
+}
+
+button.danger {
+  background: var(--color-critical);
+  border-color: var(--color-critical);
+}
+
+button.small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+th {
+  background: #fafbfc;
+  font-weight: 600;
+  color: var(--color-muted);
+}
+
+tr.critical-row td {
+  background: rgba(231, 76, 60, 0.06);
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  background: #ecf0f1;
+  color: var(--color-text);
+}
+
+.badge.critical {
+  background: var(--color-critical);
+  color: #fff;
+}
+
+.badge.status-PENDING {
+  background: #ecf0f1;
+}
+.badge.status-IN_PROGRESS {
+  background: #d6eaf8;
+}
+.badge.status-COMPLETED {
+  background: #d5f5e3;
+}
+.badge.status-DELAYED {
+  background: #fadbd8;
+  color: var(--color-critical);
+}
+
+.summary {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.summary .metric {
+  font-size: 15px;
+}
+
+.summary .metric strong {
+  font-size: 18px;
+  color: var(--color-accent);
+}
+
+.notice {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  margin-bottom: 14px;
+}
+
+.notice.loading {
+  background: #eaf2fb;
+  color: var(--color-accent);
+}
+
+.notice.error {
+  background: #fadbd8;
+  color: var(--color-critical);
+}
+
+/* ---- 甘特圖 Gantt ---- */
+.gantt {
+  overflow-x: auto;
+}
+
+.gantt-axis {
+  display: flex;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.gantt-axis .axis-spacer {
+  flex: 0 0 150px;
+}
+
+.gantt-axis .axis-day {
+  flex: 0 0 var(--day-width);
+  width: var(--day-width);
+  text-align: center;
+  font-size: 11px;
+  color: var(--color-muted);
+  border-left: 1px solid #eef1f4;
+}
+
+.gantt-row {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  border-bottom: 1px solid #f0f2f4;
+}
+
+.gantt-row .row-label {
+  flex: 0 0 150px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 8px;
+}
+
+.gantt-row .row-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 100%;
+}
+
+.gantt-bar {
+  position: absolute;
+  top: 4px;
+  height: 24px;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.gantt-bar.normal {
+  background: var(--color-normal);
+}
+
+.gantt-bar.critical {
+  background: var(--color-critical);
+}
+
+/* ---- 甘特圖：拖曳調整工期 ---- */
+.gantt-bar.dragging {
+  opacity: 0.92;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* 條形右緣拖曳把手 */
+.gantt-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  cursor: ew-resize;
+  border-top-right-radius: 4px;
+  border-bottom-right-radius: 4px;
+  background: rgba(255, 255, 255, 0.35);
+  border-left: 1px solid rgba(255, 255, 255, 0.5);
+  touch-action: none; /* 讓 pointer 事件主導，避免瀏覽器手勢干擾 */
+}
+
+.gantt-resize-handle:hover {
+  background: rgba(255, 255, 255, 0.6);
+}
+
+/* 拖曳即時預覽標籤 N 天 */
+.gantt-drag-preview {
+  background: #2c3e50;
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+/* ---- 模態 / 建立專案表單 ---- */
+.cpm-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 16px;
+  z-index: 1000;
+  overflow-y: auto;
+}
+
+.cpm-modal {
+  background: var(--color-panel);
+  border-radius: var(--radius);
+  width: 100%;
+  max-width: 880px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 80px);
+}
+
+.cpm-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.cpm-modal-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.cpm-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--color-muted);
+  font-size: 22px;
+  line-height: 1;
+  padding: 0 6px;
+  cursor: pointer;
+}
+
+.cpm-modal-close:hover {
+  color: var(--color-text);
+  opacity: 1;
+}
+
+.cpm-modal-body {
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.cpm-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--color-border);
+}
+
+.cpm-form-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.cpm-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cpm-form-field label {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.cpm-form-field input,
+.cpm-form-field select {
+  min-width: 160px;
+}
+
+.cpm-required {
+  color: var(--color-critical);
+}
+
+.cpm-optional {
+  color: var(--color-muted);
+  font-weight: 400;
+}
+
+.cpm-task-rows-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.cpm-task-rows-table {
+  width: 100%;
+}
+
+.cpm-task-rows-table th {
+  font-size: 11px;
+}
+
+.cpm-task-rows-table td {
+  vertical-align: middle;
+}
+
+.cpm-pred-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 220px;
+}
+
+.cpm-pred-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  background: #eef3f9;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+
+.cpm-muted {
+  color: var(--color-muted);
+  font-size: 12px;
+}

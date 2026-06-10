@@ -1,0 +1,224 @@
+name: CI
+
+# 企業級工程排程 SaaS (CPM) — Continuous Integration
+# Runs on ubuntu-latest (Linux) where asyncpg / httptools / reportlab all have wheels.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ===========================================================================
+  # Backend — unit + DB integration tests against real Postgres 15 + Redis 7.
+  # The cpm_app (NOSUPERUSER / NOBYPASSRLS) role is created by db/init.sql; the
+  # app + tests connect as cpm_app so RLS tenant isolation is actually enforced.
+  # ===========================================================================
+  backend-tests:
+    name: Backend tests (pytest + Postgres RLS)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: cpm
+          POSTGRES_PASSWORD: cpm_password
+          POSTGRES_DB: cpm_saas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cpm -d cpm_saas"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Install PostgreSQL client (psql)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Load schema, RLS and seed (creates cpm_app role)
+        env:
+          PGPASSWORD: cpm_password
+        run: |
+          psql -h localhost -U cpm -d cpm_saas -v ON_ERROR_STOP=1 -f db/init.sql
+
+      - name: Run unit + integration tests
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://cpm_app:cpm_app_password@localhost:5432/cpm_saas
+          REDIS_URL: redis://localhost:6379/0
+          RUN_DB_TESTS: "1"
+        run: |
+          python -m pytest -v
+
+  # ===========================================================================
+  # Frontend — Vite production build.
+  # ===========================================================================
+  frontend-build:
+    name: Frontend build (Vite)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  # ===========================================================================
+  # Compose E2E — real container stack verification through the nginx gateway:
+  #   nginx (8080) -> backend (FastAPI) -> postgres (RLS via cpm_app) + worker.
+  # Proves end-to-end tenant isolation and that the worker container stays up.
+  # ===========================================================================
+  compose-e2e:
+    name: Compose E2E (real stack via gateway)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare environment file
+        run: cp .env.example .env
+
+      - name: Build and start the stack
+        run: docker compose up -d --build
+
+      - name: Wait for backend (via gateway)
+        run: |
+          set -euo pipefail
+          echo "::group::Waiting for gateway -> backend to become ready"
+          ready=""
+          for i in $(seq 1 60); do
+            code=$(curl -o /dev/null -s -w "%{http_code}" \
+              -H "X-Tenant-Id: TENT-9981" \
+              http://localhost:8080/api/v1/projects || true)
+            echo "attempt ${i}: HTTP ${code}"
+            if [ "${code}" = "200" ]; then
+              ready="yes"
+              break
+            fi
+            sleep 5
+          done
+          echo "::endgroup::"
+          if [ -z "${ready}" ]; then
+            echo "ERROR: backend did not become ready via gateway in time"
+            exit 1
+          fi
+          echo "OK: backend is reachable through the gateway"
+
+      - name: Smoke test through the real stack (with RLS isolation)
+        run: |
+          set -euo pipefail
+
+          echo "::group::(a) Create project PRJ-E2E as TENT-9981 -> expect 200"
+          create_code=$(curl -o /tmp/create.json -s -w "%{http_code}" \
+            -X POST http://localhost:8080/api/v1/projects \
+            -H "X-Tenant-Id: TENT-9981" \
+            -H "Content-Type: application/json" \
+            -d '{
+                  "project_id": "PRJ-E2E",
+                  "project_name": "E2E Smoke Project",
+                  "region": "TW",
+                  "schedule_data": [
+                    {"task_id": "E-01", "task_name": "Design", "duration": 4, "predecessors": [], "status": "PENDING"},
+                    {"task_id": "E-02", "task_name": "Build", "duration": 6, "predecessors": ["E-01"], "status": "PENDING"}
+                  ]
+                }')
+          echo "create response body:"
+          cat /tmp/create.json || true
+          echo ""
+          echo "create HTTP ${create_code}"
+          if [ "${create_code}" != "200" ]; then
+            echo "ERROR: project creation expected 200, got ${create_code}"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::(b) GET PRJ-E2E as owner TENT-9981 -> expect 200"
+          get_owner_code=$(curl -o /tmp/get_owner.json -s -w "%{http_code}" \
+            -H "X-Tenant-Id: TENT-9981" \
+            http://localhost:8080/api/v1/projects/PRJ-E2E)
+          echo "owner GET HTTP ${get_owner_code}"
+          if [ "${get_owner_code}" != "200" ]; then
+            echo "ERROR: owner read expected 200, got ${get_owner_code}"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::(c) GET PRJ-E2E as TENT-OUTSIDER -> expect 404 (RLS isolation)"
+          get_outsider_code=$(curl -o /tmp/get_outsider.json -s -w "%{http_code}" \
+            -H "X-Tenant-Id: TENT-OUTSIDER" \
+            http://localhost:8080/api/v1/projects/PRJ-E2E)
+          echo "outsider GET HTTP ${get_outsider_code}"
+          if [ "${get_outsider_code}" != "404" ]; then
+            echo "ERROR: cross-tenant read expected 404 (RLS), got ${get_outsider_code}"
+            echo "RLS isolation is NOT enforced end-to-end!"
+            exit 1
+          fi
+          echo "OK: RLS isolation enforced end-to-end (outsider got 404)"
+          echo "::endgroup::"
+
+          echo "::group::(d) Assert worker container is running"
+          docker compose ps
+          worker_state=$(docker compose ps --status running --services | grep -x worker || true)
+          if [ "${worker_state}" != "worker" ]; then
+            echo "ERROR: worker container is not running"
+            docker compose ps worker
+            exit 1
+          fi
+          echo "OK: worker container is running"
+          echo "::endgroup::"
+
+          echo "ALL E2E ASSERTIONS PASSED"
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down the stack
+        if: always()
+        run: docker compose down -v

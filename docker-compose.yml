@@ -1,0 +1,153 @@
+# =============================================================================
+# 企業級工程排程 SaaS (CPM) — Docker Compose 編排
+# Service names MUST match config hostnames: postgres / redis / backend / worker
+# Single network. Healthchecks + depends_on(service_healthy).
+# =============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # PostgreSQL 15 — 主資料庫 (RLS 多租戶隔離; init.sql 建表 + RLS + 種子資料)
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: cpm_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cpm
+      POSTGRES_PASSWORD: cpm_password
+      POSTGRES_DB: cpm_saas
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 初始化 schema / RLS / 種子資料 (僅在資料卷為空時執行)
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cpm -d cpm_saas"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - cpm_net
+
+  # --------------------------------------------------------------------------
+  # Redis 7 — 快取 / 佇列
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: cpm_redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - cpm_net
+
+  # --------------------------------------------------------------------------
+  # Backend — FastAPI (CPM 引擎 + REST API)
+  # --------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cpm_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://cpm_app:cpm_app_password@postgres:5432/cpm_saas
+      REDIS_URL: redis://redis:6379/0
+      APP_ENV: development
+      API_V1_PREFIX: /api/v1
+      CORS_ORIGINS: http://localhost:5173,http://localhost:8080
+      DEFAULT_REGION: TW
+      LINE_CHANNEL_ACCESS_TOKEN: ""
+      DINGTALK_WEBHOOK_URL: ""
+      ERP_SCAN_INTERVAL_SECONDS: "300"
+      ERP_MAX_RETRIES: "5"
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    networks:
+      - cpm_net
+
+  # --------------------------------------------------------------------------
+  # Worker — ERP 拋轉背景排程 (APScheduler; 掃描 erp_integration.sync_event_log)
+  # 使用自有 engine/session, 不設定 app.current_tenant (跨租戶掃描)
+  # --------------------------------------------------------------------------
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cpm_worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://cpm_app:cpm_app_password@postgres:5432/cpm_saas
+      REDIS_URL: redis://redis:6379/0
+      APP_ENV: development
+      API_V1_PREFIX: /api/v1
+      CORS_ORIGINS: http://localhost:5173,http://localhost:8080
+      DEFAULT_REGION: TW
+      LINE_CHANNEL_ACCESS_TOKEN: ""
+      DINGTALK_WEBHOOK_URL: ""
+      ERP_SCAN_INTERVAL_SECONDS: "300"
+      ERP_MAX_RETRIES: "5"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: python -m app.erp.worker
+    networks:
+      - cpm_net
+
+  # --------------------------------------------------------------------------
+  # Frontend — React + Vite (build) -> nginx 靜態服務 (SPA)
+  # --------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cpm_frontend
+    restart: unless-stopped
+    expose:
+      - "80"
+    depends_on:
+      - backend
+    networks:
+      - cpm_net
+
+  # --------------------------------------------------------------------------
+  # Gateway — nginx 反向代理 (/api -> backend, / -> frontend; 雙區域路由)
+  # --------------------------------------------------------------------------
+  gateway:
+    image: nginx:alpine
+    container_name: cpm_gateway
+    restart: unless-stopped
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - cpm_net
+
+# -----------------------------------------------------------------------------
+# Named volume — PostgreSQL 持久化資料
+# -----------------------------------------------------------------------------
+volumes:
+  pgdata:
+
+# -----------------------------------------------------------------------------
+# 單一網路 — 所有服務以 service name 互通 (hostname == service name)
+# -----------------------------------------------------------------------------
+networks:
+  cpm_net:
+    driver: bridge

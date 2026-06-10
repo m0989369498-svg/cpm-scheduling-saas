@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cpm-saas.example.com/contracts/schema.json",
+  "title": "CPM Standardized Project Payload",
+  "description": "標準化專案排程交換契約 / Standardized project schedule exchange contract for the CPM SaaS. Used for project import/export and as the canonical shape exchanged between frontend, backend and ERP anti-corruption layer.",
+  "type": "object",
+  "required": ["project_id", "tenant_id", "region", "schedule_data"],
+  "additionalProperties": false,
+  "properties": {
+    "project_id": {
+      "type": "string",
+      "description": "專案代號 / Globally unique project identifier within a tenant.",
+      "minLength": 1,
+      "maxLength": 64,
+      "examples": ["PRJ-2026-TW-001"]
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "租戶代號 / Tenant identifier (multi-tenant isolation key, enforced by Postgres RLS).",
+      "minLength": 1,
+      "maxLength": 50,
+      "examples": ["TENT-9981"]
+    },
+    "region": {
+      "type": "string",
+      "description": "區域別 / Dual-region marker. TW = 台灣(繁中), CN = 中國大陸(简中). Drives i18n labels and notification channel (LINE vs DingTalk).",
+      "enum": ["TW", "CN"],
+      "default": "TW"
+    },
+    "schedule_data": {
+      "type": "array",
+      "description": "排程任務清單 / Ordered list of schedule tasks forming the project DAG.",
+      "items": {
+        "$ref": "#/definitions/TaskDefinition"
+      }
+    },
+    "erp_sync_config": {
+      "$ref": "#/definitions/ErpSyncConfig"
+    }
+  },
+  "definitions": {
+    "TaskDefinition": {
+      "type": "object",
+      "description": "單一排程任務定義 / A single schedule task. Mirrors backend TaskDefinition (Pydantic) and the tasks table.",
+      "required": ["task_id", "duration"],
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "任務代號 / Task identifier, unique within a project.",
+          "minLength": 1,
+          "maxLength": 100,
+          "examples": ["T-01"]
+        },
+        "task_name": {
+          "type": "string",
+          "description": "任務名稱 / Human-readable task name.",
+          "maxLength": 255,
+          "default": "",
+          "examples": ["基地開挖"]
+        },
+        "duration": {
+          "type": "integer",
+          "description": "工期(天) / Duration in days. Non-negative.",
+          "minimum": 0,
+          "examples": [5]
+        },
+        "predecessors": {
+          "type": "array",
+          "description": "前置任務代號清單 / List of predecessor task_ids (finish-to-start dependencies). Defines the DAG edges.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "default": [],
+          "examples": [["T-01"]]
+        },
+        "status": {
+          "$ref": "#/definitions/Status"
+        }
+      }
+    },
+    "Status": {
+      "type": "string",
+      "description": "任務狀態 / Task lifecycle status. PENDING=待辦, IN_PROGRESS=進行中, COMPLETED=完成, DELAYED=延遲/延期.",
+      "enum": ["PENDING", "IN_PROGRESS", "COMPLETED", "DELAYED"],
+      "default": "PENDING"
+    },
+    "ErpSyncConfig": {
+      "type": "object",
+      "description": "ERP 拋轉設定 / ERP synchronization configuration for this project.",
+      "additionalProperties": false,
+      "required": ["enabled", "target_erp"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "是否啟用 ERP 拋轉 / Whether ERP push is enabled for this project.",
+          "default": false
+        },
+        "target_erp": {
+          "type": "string",
+          "description": "目標 ERP 系統 / Target ERP system. SAP=SAP, DINGXIN_TW=鼎新(台灣), YONYOU_CN=用友(中國大陸).",
+          "enum": ["SAP", "DINGXIN_TW", "YONYOU_CN"],
+          "examples": ["DINGXIN_TW"]
+        }
+      }
+    }
+  }
+}

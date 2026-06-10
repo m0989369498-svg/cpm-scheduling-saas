@@ -1,0 +1,32 @@
+{
+  "project_id": "PRJ-2026-TW-001",
+  "tenant_id": "TENT-9981",
+  "region": "TW",
+  "schedule_data": [
+    {
+      "task_id": "T-01",
+      "task_name": "基地開挖",
+      "duration": 5,
+      "predecessors": [],
+      "status": "COMPLETED"
+    },
+    {
+      "task_id": "T-02",
+      "task_name": "一樓鋼筋綁紮",
+      "duration": 3,
+      "predecessors": ["T-01"],
+      "status": "IN_PROGRESS"
+    },
+    {
+      "task_id": "T-03",
+      "task_name": "一樓混凝土澆置",
+      "duration": 2,
+      "predecessors": ["T-02"],
+      "status": "PENDING"
+    }
+  ],
+  "erp_sync_config": {
+    "enabled": true,
+    "target_erp": "DINGXIN_TW"
+  }
+}
