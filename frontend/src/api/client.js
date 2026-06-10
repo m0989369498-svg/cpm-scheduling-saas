@@ -186,4 +186,51 @@ export function reportUrl(projectId) {
   return `${base}/projects/${encodeURIComponent(projectId)}/report`
 }
 
+// ---- Phase 9：進度追蹤 + EVM（實獲值管理）----
+
+// 取得每任務進度（list[ProgressEntry]；無資料列者預設 budget0/pct0）
+export async function getProgress(projectId) {
+  const res = await apiClient.get(`/projects/${encodeURIComponent(projectId)}/progress`)
+  return res.data
+}
+
+// 儲存每任務進度（upsert；body list[ProgressEntry]）-> list[ProgressEntry]
+export async function saveProgress(projectId, list) {
+  const res = await apiClient.put(`/projects/${encodeURIComponent(projectId)}/progress`, list)
+  return res.data
+}
+
+// 建立基準線（以目前 CPM es/ef/duration + 進度預算為快照）-> BaselineOut
+export async function createBaseline(projectId, name) {
+  const body = name ? { name } : {}
+  const res = await apiClient.post(`/projects/${encodeURIComponent(projectId)}/baseline`, body)
+  return res.data
+}
+
+// 取得最新基準線 -> BaselineOut（無基準線時後端回 404）
+export async function getBaseline(projectId) {
+  const res = await apiClient.get(`/projects/${encodeURIComponent(projectId)}/baseline`)
+  return res.data
+}
+
+// 計算 EVM（依最新基準線 + 進度，data_date 選用，預設基準線總工期）-> EvmResult
+export async function getEvm(projectId, dataDate) {
+  const params = {}
+  if (dataDate != null && dataDate !== '') params.data_date = dataDate
+  const res = await apiClient.get(`/projects/${encodeURIComponent(projectId)}/evm`, { params })
+  return res.data
+}
+
+// 拋轉 EVM 風險預警（若 risk_flagged 則排入 sync_event_log）-> {dispatched, ...}
+export async function dispatchEvmAlert(projectId, dataDate) {
+  const params = {}
+  if (dataDate != null && dataDate !== '') params.data_date = dataDate
+  const res = await apiClient.post(
+    `/projects/${encodeURIComponent(projectId)}/evm/alert`,
+    null,
+    { params },
+  )
+  return res.data
+}
+
 export default apiClient

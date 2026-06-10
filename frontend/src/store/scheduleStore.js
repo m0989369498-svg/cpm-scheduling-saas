@@ -61,6 +61,16 @@ export const useScheduleStore = create((set, get) => ({
   risk: [],
   simulation: null,
 
+  // ---- Phase 9：進度追蹤 + EVM（實獲值管理）----
+  // progress : list[ProgressEntry]（每任務 budget/percent_complete/actual_cost/…） | []
+  // baseline : BaselineOut（最新基準線；含 project_duration + tasks[es/ef/duration/budget]） | null
+  // evm      : EvmResult（BAC/PV/EV/AC/SPI/CPI/EAC/… + pv_curve + per_task + risk_flagged） | null
+  // dataDate : int（EVM 計算的資料日；null 表示使用基準線總工期）
+  progress: [],
+  baseline: null,
+  evm: null,
+  dataDate: null,
+
   // 登入：以帳號/密碼換取 JWT。成功後設定 token + 由權杖回傳的 tenantId/region + username，
   // 並將 token 持久化至 localStorage（攔截器與重新整理後復原皆使用）。
   // 同時持久化 tenantId/region，使標頭回退與 token 一致。
@@ -101,6 +111,11 @@ export const useScheduleStore = create((set, get) => ({
       leveling: null,
       risk: [],
       simulation: null,
+      // 重置 Phase 9 進度/EVM 狀態
+      progress: [],
+      baseline: null,
+      evm: null,
+      dataDate: null,
     })
   },
 
@@ -117,6 +132,11 @@ export const useScheduleStore = create((set, get) => ({
       leveling: null,
       risk: [],
       simulation: null,
+      // 切換租戶：清空 Phase 9 進度/EVM 狀態（避免跨租戶殘留）
+      progress: [],
+      baseline: null,
+      evm: null,
+      dataDate: null,
     })
   },
 
@@ -141,8 +161,19 @@ export const useScheduleStore = create((set, get) => ({
 
   // 載入單一專案（含 CPM 結果），設為當前專案
   loadProject: async (id) => {
-    // 切換專案：重置 Phase 8 分析狀態（撫平/模擬結果不可跨專案沿用）
-    set({ loading: true, error: null, resources: null, leveling: null, risk: [], simulation: null })
+    // 切換專案：重置 Phase 8/9 分析狀態（撫平/模擬/進度/EVM 結果不可跨專案沿用）
+    set({
+      loading: true,
+      error: null,
+      resources: null,
+      leveling: null,
+      risk: [],
+      simulation: null,
+      progress: [],
+      baseline: null,
+      evm: null,
+      dataDate: null,
+    })
     try {
       const project = await api.getProject(id)
       set({ currentProject: project, loading: false })
@@ -155,7 +186,18 @@ export const useScheduleStore = create((set, get) => ({
 
   // 建立專案，設為當前並刷新清單
   createProject: async (payload) => {
-    set({ loading: true, error: null, resources: null, leveling: null, risk: [], simulation: null })
+    set({
+      loading: true,
+      error: null,
+      resources: null,
+      leveling: null,
+      risk: [],
+      simulation: null,
+      progress: [],
+      baseline: null,
+      evm: null,
+      dataDate: null,
+    })
     try {
       const project = await api.createProject(payload)
       set({ currentProject: project, loading: false })
@@ -318,6 +360,108 @@ export const useScheduleStore = create((set, get) => ({
       const simulation = await api.simulate(cur.project_id, req)
       set({ simulation, loading: false })
       return simulation
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // ---- Phase 9：進度追蹤 + EVM（實獲值管理）----
+
+  // 載入當前專案每任務進度（list[ProgressEntry]）；存入 store.progress
+  loadProgress: async () => {
+    const cur = get().currentProject
+    if (!cur) return []
+    set({ loading: true, error: null })
+    try {
+      const progress = await api.getProgress(cur.project_id)
+      set({ progress: Array.isArray(progress) ? progress : [], loading: false })
+      return progress
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 儲存每任務進度（upsert）；回傳並更新 store.progress
+  saveProgress: async (list) => {
+    const cur = get().currentProject
+    if (!cur) return []
+    set({ loading: true, error: null })
+    try {
+      const progress = await api.saveProgress(cur.project_id, list)
+      set({ progress: Array.isArray(progress) ? progress : [], loading: false })
+      return progress
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 建立基準線（以目前 CPM + 進度預算為快照）；存入 store.baseline 並設為最新
+  createBaseline: async (name) => {
+    const cur = get().currentProject
+    if (!cur) return null
+    set({ loading: true, error: null })
+    try {
+      const baseline = await api.createBaseline(cur.project_id, name)
+      set({ baseline, loading: false })
+      return baseline
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 載入最新基準線；存入 store.baseline。無基準線（404）視為 null（不視為錯誤）。
+  loadBaseline: async () => {
+    const cur = get().currentProject
+    if (!cur) return null
+    set({ loading: true, error: null })
+    try {
+      const baseline = await api.getBaseline(cur.project_id)
+      set({ baseline, loading: false })
+      return baseline
+    } catch (err) {
+      // 尚無基準線（404）為正常狀態：清空 baseline、不顯示錯誤
+      if (err && err.response && err.response.status === 404) {
+        set({ baseline: null, loading: false })
+        return null
+      }
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 計算 EVM（dataDate 選用，預設基準線總工期）；結果存入 store.evm，並記錄使用的 dataDate
+  runEvm: async (dataDate) => {
+    const cur = get().currentProject
+    if (!cur) return null
+    set({ loading: true, error: null })
+    try {
+      const evm = await api.getEvm(cur.project_id, dataDate)
+      set({
+        evm,
+        // 以後端回傳的 data_date 為準（後端可能套用預設）；否則沿用傳入值
+        dataDate: evm && evm.data_date != null ? evm.data_date : (dataDate ?? get().dataDate),
+        loading: false,
+      })
+      return evm
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 拋轉 EVM 風險預警（若 risk_flagged 後端才會排入同步事件）-> {dispatched, ...}
+  dispatchEvmAlert: async (dataDate) => {
+    const cur = get().currentProject
+    if (!cur) return null
+    set({ loading: true, error: null })
+    try {
+      const result = await api.dispatchEvmAlert(cur.project_id, dataDate)
+      set({ loading: false })
+      return result
     } catch (err) {
       set({ error: extractError(err), loading: false })
       throw err

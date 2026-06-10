@@ -50,9 +50,11 @@ async def _seed_core_data() -> None:
     from app.models.orm import (
         ErpConfig,
         Project,
+        ProjectBaseline,
         ProjectResourceLimit,
         Task,
         TaskDependency,
+        TaskProgress,
         TaskRiskParameter,
         Tenant,
     )
@@ -70,6 +72,10 @@ async def _seed_core_data() -> None:
     #   deps   : (task_id, predecessor_task_id)
     #   limits : (resource_type, max_capacity)            專案資源上限
     #   risk   : (task_id, optimistic, most_likely, pessimistic)  PERT 三點估計
+    #   progress : (task_id, budget, percent_complete, actual_cost,
+    #              actual_start_day|None, actual_finish_day|None)  Phase 9 進度/EVM
+    #   baseline : {"project_duration": int,
+    #              "tasks": [{task_id, es, ef, duration, budget}, ...]}  Phase 9 基準線快照
     projects = {
         "PRJ-2026-TW-001": {
             "tenant_id": "TENT-9981",
@@ -90,6 +96,21 @@ async def _seed_core_data() -> None:
                 ("T-02", 2, 3, 7),
                 ("T-03", 1, 2, 5),
             ],
+            # Phase 9 — 刻意造出「落後 + 超支」的示範 (BAC=100000)。
+            # 於 data_date=8：SPI<1 (落後)、CPI<1 (超支)。
+            "progress": [
+                ("T-01", 50000, 100, 55000, 0, 6),
+                ("T-02", 30000, 40, 20000, 6, None),
+                ("T-03", 20000, 0, 0, None, None),
+            ],
+            "baseline": {
+                "project_duration": 10,
+                "tasks": [
+                    {"task_id": "T-01", "es": 0, "ef": 5, "duration": 5, "budget": 50000},
+                    {"task_id": "T-02", "es": 5, "ef": 8, "duration": 3, "budget": 30000},
+                    {"task_id": "T-03", "es": 8, "ef": 10, "duration": 2, "budget": 20000},
+                ],
+            },
         },
         "PRJ-2026-CN-001": {
             "tenant_id": "TENT-CN-002",
@@ -107,6 +128,18 @@ async def _seed_core_data() -> None:
                 ("C-01", 2, 4, 8),
                 ("C-02", 4, 6, 11),
             ],
+            # Phase 9 — 健康示範值。
+            "progress": [
+                ("C-01", 40000, 100, 38000, 0, 4),
+                ("C-02", 60000, 50, 30000, 4, None),
+            ],
+            "baseline": {
+                "project_duration": 10,
+                "tasks": [
+                    {"task_id": "C-01", "es": 0, "ef": 4, "duration": 4, "budget": 40000},
+                    {"task_id": "C-02", "es": 4, "ef": 10, "duration": 6, "budget": 60000},
+                ],
+            },
         },
         # 雙塔平行工程示範 (資源衝突)：A/B 兩棟於 PA0 整備後平行施工。
         # PA1 與 PB1 同時各需吊車 1 部，但專案吊車上限僅 1 部 => 必然衝突。
@@ -148,6 +181,26 @@ async def _seed_core_data() -> None:
                 ("PB2", 1, 2, 5),
                 ("PF", 1, 1, 2),
             ],
+            # Phase 9 — 健康示範值 (BAC=170000)。
+            "progress": [
+                ("PA0", 10000, 100, 10000, 0, 2),
+                ("PA1", 40000, 100, 39000, 2, 6),
+                ("PB1", 35000, 75, 26000, 2, None),
+                ("PA2", 50000, 20, 11000, 6, None),
+                ("PB2", 20000, 0, 0, None, None),
+                ("PF", 15000, 0, 0, None, None),
+            ],
+            "baseline": {
+                "project_duration": 12,
+                "tasks": [
+                    {"task_id": "PA0", "es": 0, "ef": 2, "duration": 2, "budget": 10000},
+                    {"task_id": "PA1", "es": 2, "ef": 6, "duration": 4, "budget": 40000},
+                    {"task_id": "PB1", "es": 2, "ef": 6, "duration": 4, "budget": 35000},
+                    {"task_id": "PA2", "es": 6, "ef": 11, "duration": 5, "budget": 50000},
+                    {"task_id": "PB2", "es": 6, "ef": 8, "duration": 2, "budget": 20000},
+                    {"task_id": "PF", "es": 11, "ef": 12, "duration": 1, "budget": 15000},
+                ],
+            },
         },
     }
     # (tenant_id, erp_type, api_endpoint)
@@ -267,6 +320,53 @@ async def _seed_core_data() -> None:
                                 optimistic_duration=a,
                                 most_likely_duration=m,
                                 pessimistic_duration=b,
+                            )
+                        )
+
+                # Phase 9 — 任務進度 / EVM 預算 (冪等：project_id + task_id 唯一)
+                for (
+                    task_id,
+                    budget,
+                    percent_complete,
+                    actual_cost,
+                    actual_start_day,
+                    actual_finish_day,
+                ) in p.get("progress", []):
+                    found = await session.execute(
+                        select(TaskProgress).where(
+                            TaskProgress.project_id == project_id,
+                            TaskProgress.task_id == task_id,
+                        )
+                    )
+                    if found.scalar_one_or_none() is None:
+                        session.add(
+                            TaskProgress(
+                                project_id=project_id,
+                                tenant_id=p["tenant_id"],
+                                task_id=task_id,
+                                budget=budget,
+                                percent_complete=percent_complete,
+                                actual_cost=actual_cost,
+                                actual_start_day=actual_start_day,
+                                actual_finish_day=actual_finish_day,
+                            )
+                        )
+
+                # Phase 9 — 專案基準線 (冪等：該專案尚無任何基準線時才插入一條)
+                baseline = p.get("baseline")
+                if baseline is not None:
+                    found = await session.execute(
+                        select(ProjectBaseline.id).where(
+                            ProjectBaseline.project_id == project_id
+                        )
+                    )
+                    if found.first() is None:
+                        session.add(
+                            ProjectBaseline(
+                                project_id=project_id,
+                                tenant_id=p["tenant_id"],
+                                name="baseline",
+                                snapshot=baseline,
                             )
                         )
 
@@ -417,6 +517,11 @@ from app.routers.analytics import router as analytics_router  # noqa: E402
 
 app.include_router(resources_router, prefix=_prefix)
 app.include_router(analytics_router, prefix=_prefix)
+
+# Phase 9 — 進度追蹤 / 實獲值管理 (EVM) 路由器 (progress)。
+from app.routers.progress import router as progress_router  # noqa: E402
+
+app.include_router(progress_router, prefix=_prefix)
 
 
 @app.get("/health", tags=["meta"])

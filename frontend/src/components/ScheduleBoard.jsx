@@ -6,6 +6,7 @@ import GanttChart from './GanttChart';
 import ProjectForm from './ProjectForm';
 import ResourcePanel from './ResourcePanel';
 import RiskPanel from './RiskPanel';
+import ProgressPanel from './ProgressPanel';
 
 /**
  * ScheduleBoard 工期排程主控板
@@ -47,6 +48,8 @@ export default function ScheduleBoard() {
     loading,
     error,
     leveling,
+    baseline,
+    progress,
     setTenant,
     setRegion,
     loadProjects,
@@ -56,6 +59,8 @@ export default function ScheduleBoard() {
     removeTask,
     createProject,
     syncErp,
+    loadProgress,
+    loadBaseline,
   } = useScheduleStore();
 
   // 本地草稿：每列工期輸入框的暫存值 (key = task_id)
@@ -97,6 +102,16 @@ export default function ScheduleBoard() {
     }
   }, [currentProject]);
 
+  // Phase 9：切換專案後預載進度 + 最新基準線，使甘特圖能在「排程」分頁即顯示
+  // 計畫 vs 實際疊圖與完成度填色（兩者皆為 best-effort；失敗時靜默，不影響排程）。
+  useEffect(() => {
+    if (currentProject?.project_id) {
+      loadProgress().catch(() => {});
+      loadBaseline().catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProject?.project_id]);
+
   const tasks = currentProject?.tasks || [];
 
   // 要徑摘要：依 es 排序後串接要徑 task_id
@@ -115,6 +130,18 @@ export default function ScheduleBoard() {
     }
     return undefined;
   }, [leveling]);
+
+  // Phase 9：完成度查詢表 task_id -> percent_complete（傳入甘特圖填色）；無進度時為 undefined
+  const progressMap = useMemo(() => {
+    if (Array.isArray(progress) && progress.length > 0) {
+      const map = {};
+      progress.forEach((p) => {
+        if (p && p.task_id != null) map[p.task_id] = p.percent_complete;
+      });
+      return Object.keys(map).length > 0 ? map : undefined;
+    }
+    return undefined;
+  }, [progress]);
 
   // ---- 事件處理 ----
 
@@ -385,6 +412,7 @@ export default function ScheduleBoard() {
               { key: 'schedule', label: `${t(region, 'task')} / ${t(region, 'criticalPath')}` },
               { key: 'resources', label: t(region, 'resourceLeveling') },
               { key: 'risk', label: t(region, 'riskAnalysis') },
+              { key: 'progress', label: `${t(region, 'progress')} / ${t(region, 'evm')}` },
             ].map((tab) => {
               const active = activeTab === tab.key;
               return (
@@ -416,6 +444,9 @@ export default function ScheduleBoard() {
           {/* ===== 風險分析分頁 ===== */}
           {activeTab === 'risk' && <RiskPanel region={region} />}
 
+          {/* ===== 進度 / EVM 分頁（Phase 9） ===== */}
+          {activeTab === 'progress' && <ProgressPanel region={region} />}
+
           {/* ===== 排程分頁（甘特圖 + 任務表格 + 新增任務） ===== */}
           {activeTab === 'schedule' && (
           <>
@@ -427,6 +458,8 @@ export default function ScheduleBoard() {
                 region={region}
                 onTaskDurationChange={(id, d) => changeTaskDuration(id, d)}
                 overCapacityDays={overCapacityDays}
+                baseline={baseline}
+                progress={progressMap}
               />
             ) : (
               <div style={{ padding: '24px', textAlign: 'center', color: '#999', border: '1px dashed #ddd', borderRadius: '6px' }}>

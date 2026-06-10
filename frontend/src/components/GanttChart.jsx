@@ -15,6 +15,14 @@ import { t } from '../i18n';
  *   overCapacityDays? : list[int]   (選用，Phase 8 資源撫平)
  *       提供時：於這些「日」欄位疊加半透明紅色警示帶（資源衝突視覺化），
  *       橫跨所有任務列；未提供（或空陣列）時維持原本渲染。
+ *   baseline? : BaselineOut   (選用，Phase 9 計畫 vs 實際)
+ *       提供時：於每根目前條形「之下」繪製一根細的灰色「計畫」條形
+ *       （由 baseline.tasks 的 es/duration 推算位置與寬度），供計畫 vs 實際對照。
+ *       未提供時維持原本渲染（不繪計畫條）。
+ *   progress? : object{ [task_id]: percent_complete:int }   (選用，Phase 9 完成度)
+ *       提供時：依完成百分比於目前條形內以較深色填滿；落後（目前條形右緣
+ *       超過計畫條形右緣，且有 baseline）時以紅色外框淡染標示。
+ *       未提供時維持原本渲染（不填色、不淡染）。
  *
  * 繪製規則 (沿用原型外觀)：
  *   - 每一列代表一個任務 (task)
@@ -43,8 +51,41 @@ export default function GanttChart({
   region = 'TW',
   onTaskDurationChange,
   overCapacityDays,
+  baseline,
+  progress,
 }) {
   const draggable = typeof onTaskDurationChange === 'function';
+
+  // Phase 9：基準線（計畫）查詢表 task_id -> {es, duration}；未提供時為空（不繪計畫條）
+  const baselineMap = React.useMemo(() => {
+    const map = {};
+    if (baseline && Array.isArray(baseline.tasks)) {
+      baseline.tasks.forEach((bt) => {
+        if (bt && bt.task_id != null) {
+          map[bt.task_id] = {
+            es: Number(bt.es) || 0,
+            duration: Math.max(0, Number(bt.duration) || 0),
+          };
+        }
+      });
+    }
+    return map;
+  }, [baseline]);
+
+  // Phase 9：完成度查詢表 task_id -> percent_complete(0..100)；未提供時為空（不填色）
+  const progressMap = React.useMemo(() => {
+    const map = {};
+    if (progress && typeof progress === 'object') {
+      Object.keys(progress).forEach((k) => {
+        const v = Number(progress[k]);
+        if (Number.isFinite(v)) map[k] = Math.max(0, Math.min(100, v));
+      });
+    }
+    return map;
+  }, [progress]);
+
+  const hasBaseline = Object.keys(baselineMap).length > 0;
+  const hasProgress = progressMap && Object.keys(progressMap).length > 0;
 
   // 資源超載警示日（Phase 8）：去重後的整數集合；未提供時為空集合（不繪製）
   const overDaysSet = React.useMemo(() => {
@@ -128,7 +169,11 @@ export default function GanttChart({
   // 拖曳預覽時，可能讓條形超出原時間軸；以預覽結束日 (es + previewDuration)
   // 擴張時間軸，避免條形被裁切。
   const previewEnd = drag ? drag.es + drag.previewDuration : 0;
-  const totalDays = Math.max(maxEf, previewEnd, 1);
+  // Phase 9：基準線（計畫）條形可能延伸至目前 ef 之後；以其最大結束日擴張時間軸。
+  const baselineEnd = hasBaseline
+    ? Object.values(baselineMap).reduce((m, b) => Math.max(m, b.es + b.duration), 0)
+    : 0;
+  const totalDays = Math.max(maxEf, previewEnd, baselineEnd, 1);
 
   // 產生日刻度陣列 [0,1,2,...,totalDays]
   const dayTicks = [];
@@ -245,6 +290,23 @@ export default function GanttChart({
             effectiveDuration > 0 ? DAY_WIDTH : 4,
           );
 
+          // Phase 9：基準線（計畫）條形位置/寬度（若有此任務基準資料）
+          const bl = baselineMap[task.task_id];
+          const hasBl = Boolean(bl);
+          const blLeft = hasBl ? bl.es * DAY_WIDTH : 0;
+          const blWidth = hasBl
+            ? Math.max(bl.duration * DAY_WIDTH, bl.duration > 0 ? DAY_WIDTH : 4)
+            : 0;
+          // 落後判定：有基準線且目前結束日（es+duration）晚於計畫結束日（bl.es+bl.duration）
+          const behindSchedule = hasBl && es + duration > bl.es + bl.duration;
+
+          // Phase 9：完成百分比（0..100）；用於目前條形內填色寬度
+          const pct = Object.prototype.hasOwnProperty.call(progressMap, task.task_id)
+            ? progressMap[task.task_id]
+            : null;
+          const hasPct = pct != null;
+          const fillWidth = hasPct ? (barWidth * pct) / 100 : 0;
+
           return (
             <div
               key={task.task_id || idx}
@@ -301,11 +363,30 @@ export default function GanttChart({
                   />
                 ))}
 
+                {/* Phase 9：基準線（計畫）細條形，繪於目前條形之下／之後（淡灰） */}
+                {hasBl && !isDragging && (
+                  <div
+                    className="gantt-baseline-bar"
+                    aria-hidden="true"
+                    style={{
+                      position: 'absolute',
+                      left: blLeft,
+                      top: (ROW_HEIGHT - BAR_HEIGHT) / 2 + BAR_HEIGHT - 5,
+                      width: blWidth,
+                      height: 6,
+                      background: 'repeating-linear-gradient(45deg, #b0b8c4, #b0b8c4 4px, #c8cfd8 4px, #c8cfd8 8px)',
+                      borderRadius: '3px',
+                      zIndex: 1,
+                    }}
+                    title={`${t(region, 'baseline')} | ${t(region, 'plannedVsActual')} | ES ${bl.es} · ${bl.duration} ${t(region, 'days')}`}
+                  />
+                )}
+
                 {/* 任務條形 */}
                 <div
                   className={`gantt-bar ${critical ? 'critical' : 'normal'}${
                     isDragging ? ' dragging' : ''
-                  }`}
+                  }${behindSchedule ? ' behind' : ''}`}
                   style={{
                     position: 'absolute',
                     left: barLeft,
@@ -323,18 +404,47 @@ export default function GanttChart({
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
                     boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
+                    // 落後（且非拖曳中）時加紅色外框淡染標示
+                    outline: behindSchedule && !isDragging ? '2px solid rgba(192, 57, 43, 0.85)' : 'none',
+                    zIndex: 2,
                   }}
                   title={`${task.task_id} | ${t(region, 'duration')}: ${duration} ${t(
                     region,
                     'days'
                   )} | ES ${es} EF ${task.ef} | ${t(region, 'floatTime')}: ${task.float_time}${
+                    hasPct ? ` | ${t(region, 'percentComplete')}: ${pct}%` : ''
+                  }${behindSchedule ? ` | ${t(region, 'behindSchedule')}` : ''}${
                     draggable ? ` | ${t(region, 'dragHint')}` : ''
                   }`}
                 >
-                  {/* 要徑火焰標記 */}
-                  {critical ? '🔥 ' : ''}
-                  {effectiveDuration}
-                  {t(region, 'day')}
+                  {/* Phase 9：完成百分比填色（較深色，自左填入），未提供 progress 時不繪 */}
+                  {hasPct && !isDragging && (
+                    <div
+                      className="gantt-progress-fill"
+                      aria-hidden="true"
+                      style={{
+                        position: 'absolute',
+                        left: 0,
+                        top: 0,
+                        width: fillWidth,
+                        height: '100%',
+                        background: 'rgba(0, 0, 0, 0.28)',
+                        borderTopLeftRadius: '4px',
+                        borderBottomLeftRadius: '4px',
+                        borderTopRightRadius: pct >= 100 ? '4px' : 0,
+                        borderBottomRightRadius: pct >= 100 ? '4px' : 0,
+                        pointerEvents: 'none',
+                      }}
+                    />
+                  )}
+
+                  {/* 要徑火焰標記（置於填色之上） */}
+                  <span style={{ position: 'relative', zIndex: 1 }}>
+                    {critical ? '🔥 ' : ''}
+                    {effectiveDuration}
+                    {t(region, 'day')}
+                    {hasPct ? ` · ${pct}%` : ''}
+                  </span>
 
                   {/* 拖曳把手（僅在提供 onTaskDurationChange 時渲染） */}
                   {draggable && (
@@ -403,6 +513,39 @@ export default function GanttChart({
           />
           {t(region, 'floatTime')} &gt; 0
         </span>
+
+        {/* Phase 9：計畫條（基準線）圖例 */}
+        {hasBaseline && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <span
+              style={{
+                display: 'inline-block',
+                width: '14px',
+                height: '6px',
+                background:
+                  'repeating-linear-gradient(45deg, #b0b8c4, #b0b8c4 4px, #c8cfd8 4px, #c8cfd8 8px)',
+                borderRadius: '3px',
+              }}
+            />
+            {t(region, 'baseline')} ({t(region, 'plannedVsActual')})
+          </span>
+        )}
+
+        {/* Phase 9：完成度填色圖例 */}
+        {hasProgress && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <span
+              style={{
+                display: 'inline-block',
+                width: '14px',
+                height: '14px',
+                background: 'rgba(0, 0, 0, 0.28)',
+                borderRadius: '3px',
+              }}
+            />
+            {t(region, 'percentComplete')}
+          </span>
+        )}
       </div>
     </div>
   );

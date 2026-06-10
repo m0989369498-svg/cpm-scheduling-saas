@@ -50,11 +50,15 @@ _RISK_TITLE: dict[str, dict[str, str]] = {
         "_default": "排程風險預警",
         "LEVELING_EXTENSION": "資源撫平導致工期展延",
         "LOW_ONTIME_PROBABILITY": "準時完工機率偏低",
+        # Phase 9 — 實獲值管理 (EVM)：進度落後 + 成本超支
+        "SCHEDULE_COST_OVERRUN": "進度落後且成本超支",
     },
     "CN": {
         "_default": "进度风险预警",
         "LEVELING_EXTENSION": "资源平衡导致工期延期",
         "LOW_ONTIME_PROBABILITY": "按时完工概率偏低",
+        # Phase 9 — 挣值管理 (EVM)：进度落后 + 成本超支
+        "SCHEDULE_COST_OVERRUN": "进度落后且成本超支",
     },
 }
 
@@ -72,6 +76,14 @@ _RISK_FIELD_LABELS: dict[str, dict[str, str]] = {
         "mean": "平均工期",
         "unresolved": "未解衝突",
         "over_capacity_days": "超載天數",
+        # Phase 9 — 實獲值管理 (EVM) 指標
+        "data_date": "資料日",
+        "spi": "進度績效指標 (SPI)",
+        "cpi": "成本績效指標 (CPI)",
+        "sv": "進度差異 (SV)",
+        "cv": "成本差異 (CV)",
+        "eac": "完工估算 (EAC)",
+        "vac": "完工差異 (VAC)",
     },
     "CN": {
         "project_id": "项目",
@@ -85,6 +97,14 @@ _RISK_FIELD_LABELS: dict[str, dict[str, str]] = {
         "mean": "平均工期",
         "unresolved": "未解冲突",
         "over_capacity_days": "超载天数",
+        # Phase 9 — 挣值管理 (EVM) 指标
+        "data_date": "数据日",
+        "spi": "进度绩效指数 (SPI)",
+        "cpi": "成本绩效指数 (CPI)",
+        "sv": "进度偏差 (SV)",
+        "cv": "成本偏差 (CV)",
+        "eac": "完工估算 (EAC)",
+        "vac": "完工偏差 (VAC)",
     },
 }
 

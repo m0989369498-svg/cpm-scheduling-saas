@@ -413,6 +413,130 @@ CREATE TABLE IF NOT EXISTS public.app_users (
 -- 注意：刻意「不」對 app_users ENABLE ROW LEVEL SECURITY。
 
 -- =============================================================================
+-- 4.9 Phase 9 — 進度追蹤 / 實獲值管理 (EVM) 新增表 (public schema，RLS ENABLE+FORCE)
+-- -----------------------------------------------------------------------------
+-- 決策：進度 (task_progress) 與基準線 (project_baselines) 為租戶排程資料，
+--       置於 public 並受 RLS 保護，與 tasks / projects 的隔離方式一致。
+--       本區塊置於 GRANT 區塊之前，方能被「GRANT ON ALL TABLES」一併涵蓋。
+-- =============================================================================
+
+-- 4.9.1 任務進度 (task_progress) — 預算 / 完成度 / 實際成本 ---------------------
+--   每任務一列；EVM 以 budget=PV/EV 基準、percent_complete 求 EV、actual_cost=AC。
+CREATE TABLE IF NOT EXISTS public.task_progress (
+    id                BIGSERIAL    PRIMARY KEY,
+    project_id        VARCHAR(64)  NOT NULL REFERENCES public.projects(project_id) ON DELETE CASCADE,
+    tenant_id         VARCHAR(50)  NOT NULL,
+    task_id           VARCHAR(100) NOT NULL,
+    budget            DOUBLE PRECISION NOT NULL DEFAULT 0,                 -- 任務預算 (BAC 組成)
+    percent_complete  INT          NOT NULL DEFAULT 0 CHECK (percent_complete BETWEEN 0 AND 100),  -- 完成百分比
+    actual_cost       DOUBLE PRECISION NOT NULL DEFAULT 0,                 -- 實際成本 (AC)
+    actual_start_day  INT          NULL,                                   -- 實際開始 (相對第 0 天)
+    actual_finish_day INT          NULL,                                   -- 實際完成 (相對第 0 天)
+    updated_at        TIMESTAMPTZ  DEFAULT now(),
+    UNIQUE (project_id, task_id)
+);
+
+-- 4.9.2 專案基準線 (project_baselines) — 排程 + 預算快照 (PV 基準) --------------
+--   snapshot 形狀：{"project_duration":int,
+--                   "tasks":[{"task_id","es","ef","duration","budget"}]}。
+--   允許多條；最新 (max created_at / max id) 為作用中基準。
+CREATE TABLE IF NOT EXISTS public.project_baselines (
+    id          BIGSERIAL    PRIMARY KEY,
+    project_id  VARCHAR(64)  NOT NULL REFERENCES public.projects(project_id) ON DELETE CASCADE,
+    tenant_id   VARCHAR(50)  NOT NULL,
+    name        VARCHAR(120) NOT NULL DEFAULT 'baseline',
+    snapshot    JSONB        NOT NULL,                                     -- 排程 + 預算快照
+    created_at  TIMESTAMPTZ  DEFAULT now()
+);
+
+-- 常用查詢索引 -----------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_task_progress_project   ON public.task_progress(project_id);
+CREATE INDEX IF NOT EXISTS idx_task_progress_tenant    ON public.task_progress(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_baselines_project       ON public.project_baselines(project_id);
+CREATE INDEX IF NOT EXISTS idx_baselines_tenant        ON public.project_baselines(tenant_id);
+
+-- 4.9.3 Row Level Security — 與 tasks / projects 相同的多租戶政策 -------------
+ALTER TABLE public.task_progress ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.task_progress FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_task_progress ON public.task_progress;
+CREATE POLICY tenant_isolation_task_progress ON public.task_progress
+    USING       (tenant_id = current_setting('app.current_tenant', true))
+    WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
+
+ALTER TABLE public.project_baselines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.project_baselines FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_baselines ON public.project_baselines;
+CREATE POLICY tenant_isolation_baselines ON public.project_baselines
+    USING       (tenant_id = current_setting('app.current_tenant', true))
+    WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
+
+-- 4.9.4 Phase 9 種子資料 (示範預算 / 進度 / 基準線) ----------------------------
+--   以 cpm (owner) 身分執行 => 繞過 RLS；冪等 (ON CONFLICT / WHERE NOT EXISTS)。
+--   PRJ-2026-TW-001：刻意造出「落後 + 超支」(behind + over-budget) 的示範：
+--     budgets T-01=50000 / T-02=30000 / T-03=20000 (BAC=100000)；
+--     progress T-01 100%/ac55000、T-02 40%/ac20000、T-03 0%/ac0。
+--     於 data_date=8：SPI<1 (落後)、CPI<1 (超支) => EVM 與風險預警有意義。
+--   PRJ-2026-CN-001 / PRJ-2026-TW-PARALLEL：給予合理 (健康) 示範值。
+
+-- 任務進度 (預算 / 完成度 / 實際成本) ------------------------------------------
+INSERT INTO public.task_progress
+    (project_id, tenant_id, task_id, budget, percent_complete, actual_cost,
+     actual_start_day, actual_finish_day)
+VALUES
+    -- PRJ-2026-TW-001 (落後 + 超支)
+    ('PRJ-2026-TW-001', 'TENT-9981', 'T-01', 50000, 100, 55000, 0, 6),
+    ('PRJ-2026-TW-001', 'TENT-9981', 'T-02', 30000,  40, 20000, 6, NULL),
+    ('PRJ-2026-TW-001', 'TENT-9981', 'T-03', 20000,   0,     0, NULL, NULL),
+    -- PRJ-2026-CN-001 (健康示範值)
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'C-01', 40000, 100, 38000, 0, 4),
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'C-02', 60000,  50, 30000, 4, NULL),
+    -- PRJ-2026-TW-PARALLEL (健康示範值)
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PA0', 10000, 100, 10000, 0, 2),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PA1', 40000, 100, 39000, 2, 6),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PB1', 35000,  75, 26000, 2, NULL),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PA2', 50000,  20, 11000, 6, NULL),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PB2', 20000,   0,     0, NULL, NULL),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'PF',  15000,   0,     0, NULL, NULL)
+ON CONFLICT (project_id, task_id) DO NOTHING;
+
+-- 專案基準線 (snapshot：依各任務 es/ef/duration 與上方預算組成) -----------------
+--   僅在該專案尚無任何基準線時插入 (WHERE NOT EXISTS) => 冪等且不重複堆疊。
+INSERT INTO public.project_baselines (project_id, tenant_id, name, snapshot)
+SELECT 'PRJ-2026-TW-001', 'TENT-9981', 'baseline',
+    '{"project_duration": 10, "tasks": [
+        {"task_id": "T-01", "es": 0, "ef": 5,  "duration": 5, "budget": 50000},
+        {"task_id": "T-02", "es": 5, "ef": 8,  "duration": 3, "budget": 30000},
+        {"task_id": "T-03", "es": 8, "ef": 10, "duration": 2, "budget": 20000}
+    ]}'::jsonb
+WHERE NOT EXISTS (
+    SELECT 1 FROM public.project_baselines WHERE project_id = 'PRJ-2026-TW-001'
+);
+
+INSERT INTO public.project_baselines (project_id, tenant_id, name, snapshot)
+SELECT 'PRJ-2026-CN-001', 'TENT-CN-002', 'baseline',
+    '{"project_duration": 10, "tasks": [
+        {"task_id": "C-01", "es": 0, "ef": 4,  "duration": 4, "budget": 40000},
+        {"task_id": "C-02", "es": 4, "ef": 10, "duration": 6, "budget": 60000}
+    ]}'::jsonb
+WHERE NOT EXISTS (
+    SELECT 1 FROM public.project_baselines WHERE project_id = 'PRJ-2026-CN-001'
+);
+
+INSERT INTO public.project_baselines (project_id, tenant_id, name, snapshot)
+SELECT 'PRJ-2026-TW-PARALLEL', 'TENT-9981', 'baseline',
+    '{"project_duration": 12, "tasks": [
+        {"task_id": "PA0", "es": 0,  "ef": 2,  "duration": 2, "budget": 10000},
+        {"task_id": "PA1", "es": 2,  "ef": 6,  "duration": 4, "budget": 40000},
+        {"task_id": "PB1", "es": 2,  "ef": 6,  "duration": 4, "budget": 35000},
+        {"task_id": "PA2", "es": 6,  "ef": 11, "duration": 5, "budget": 50000},
+        {"task_id": "PB2", "es": 6,  "ef": 8,  "duration": 2, "budget": 20000},
+        {"task_id": "PF",  "es": 11, "ef": 12, "duration": 1, "budget": 15000}
+    ]}'::jsonb
+WHERE NOT EXISTS (
+    SELECT 1 FROM public.project_baselines WHERE project_id = 'PRJ-2026-TW-PARALLEL'
+);
+
+-- =============================================================================
 -- 5. 應用程式連線角色 cpm_app (NON-SUPERUSER) — RLS 真正生效的關鍵
 -- -----------------------------------------------------------------------------
 -- 安全性重點 (root cause)：

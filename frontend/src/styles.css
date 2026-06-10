@@ -313,6 +313,22 @@ tr.critical-row td {
   pointer-events: none;
 }
 
+/* ---- 甘特圖：計畫 vs 實際 + 完成度填色（Phase 9 進度追蹤 / EVM）---- */
+/* 基準線（計畫）細條形：斜紋淡灰，繪於目前條形之下 */
+.gantt-baseline-bar {
+  pointer-events: none;
+}
+
+/* 目前條形內的完成百分比填色（半透明深色，自左填入） */
+.gantt-progress-fill {
+  pointer-events: none;
+}
+
+/* 落後（目前結束日晚於計畫結束日）：條形紅色外框淡染強調 */
+.gantt-bar.behind {
+  box-shadow: 0 0 0 2px rgba(192, 57, 43, 0.85), 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
 /* 拖曳即時預覽標籤 N 天 */
 .gantt-drag-preview {
   background: #2c3e50;

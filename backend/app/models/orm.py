@@ -238,7 +238,86 @@ class TaskRiskParameter(Base):
 
 
 # ---------------------------------------------------------------------------
-# public schema —— 應用使用者 (app_users)；登入用，「不」受 RLS 保護
+# public schema —— Phase 9 進度追蹤 / 實獲值管理 (EVM) 表 (受 RLS 保護)
+# ---------------------------------------------------------------------------
+class TaskProgress(Base):
+    """任務進度 (task_progress)。
+
+    每個任務的進度與成本實況，供實獲值管理 (EVM / Earned Value Management) 計算：
+      budget          預算 (BAC 的組成；計畫值 PV / 實獲值 EV 之基準)
+      percent_complete完成百分比 [0,100] (EV = budget * pct/100)
+      actual_cost     實際成本 (AC)
+      actual_start_day/actual_finish_day  實際起訖 (相對於專案第 0 天)
+    受 RLS 保護 (與 tasks / projects 一致)，故置於 public schema。
+    (project_id, task_id) 唯一 —— 每任務一列，PUT 以此 upsert。
+    """
+
+    __tablename__ = "task_progress"
+    __table_args__ = (
+        UniqueConstraint("project_id", "task_id", name="uq_task_progress_project_task"),
+        CheckConstraint(
+            "percent_complete BETWEEN 0 AND 100",
+            name="ck_task_progress_percent_range",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    budget: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default=text("0")
+    )
+    percent_complete: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    actual_cost: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default=text("0")
+    )
+    actual_start_day: Mapped[int | None] = mapped_column(Integer)
+    actual_finish_day: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP_TZ, server_default=func.now()
+    )
+
+
+class ProjectBaseline(Base):
+    """專案基準線 (project_baselines)。
+
+    某時點的排程 + 預算快照 (snapshot)，作為 EVM 的計畫值 (PV) 基準。
+    snapshot JSON 形狀：
+      {"project_duration": int,
+       "tasks": [{"task_id": str, "es": int, "ef": int,
+                  "duration": int, "budget": float}, ...]}
+    允許多條基準線；以「最新者」(最大 created_at / 最大 id) 為作用中基準。
+    受 RLS 保護 (與 tasks / projects 一致)，故置於 public schema。
+    """
+
+    __tablename__ = "project_baselines"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[str] = mapped_column(
+        String(120), nullable=False, server_default=text("'baseline'")
+    )
+    # 排程 + 預算快照 (可攜 JSON：PostgreSQL -> JSONB、sqlite -> JSON)。
+    snapshot: Mapped[dict] = mapped_column(JSON_PORTABLE, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP_TZ, server_default=func.now()
+    )
+
+
+# ---------------------------------------------------------------------------
+# public schema —— 應用使用者 (app_users)；登入用,「不」受 RLS 保護
 # ---------------------------------------------------------------------------
 class AppUser(Base):
     """應用登入帳號 (app_users)。

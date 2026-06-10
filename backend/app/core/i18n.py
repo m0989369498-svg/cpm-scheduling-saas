@@ -47,6 +47,13 @@ I18N: dict[str, dict] = {
         "criticalityIndex": "要徑機率",
         "riskProvision": "風險預警備料",
         "onTimeProbability": "準時完工機率",
+        # Phase 9 — 實獲值管理（EVM；用於排程/成本超支風險卡片）
+        "bac": "完工預算 (BAC)",
+        "spi": "進度績效指標 (SPI)",
+        "cpi": "成本績效指標 (CPI)",
+        "eac": "完工估算 (EAC)",
+        "scheduleVariance": "進度差異 (SV)",
+        "costVariance": "成本差異 (CV)",
         "statuses": {
             "PENDING": "待辦",
             "IN_PROGRESS": "進行中",
@@ -83,6 +90,13 @@ I18N: dict[str, dict] = {
         "criticalityIndex": "关键路径概率",
         "riskProvision": "风险预警备料",
         "onTimeProbability": "按时完工概率",
+        # Phase 9 — 挣值管理（EVM；用于进度/成本超支风险卡片）
+        "bac": "完工预算 (BAC)",
+        "spi": "进度绩效指数 (SPI)",
+        "cpi": "成本绩效指数 (CPI)",
+        "eac": "完工估算 (EAC)",
+        "scheduleVariance": "进度偏差 (SV)",
+        "costVariance": "成本偏差 (CV)",
         "statuses": {
             "PENDING": "待办",
             "IN_PROGRESS": "进行中",
