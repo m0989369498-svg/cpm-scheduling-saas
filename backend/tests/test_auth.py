@@ -166,17 +166,80 @@ def _unlink_with_retry(path: str, attempts: int = 10, delay: float = 0.05) -> No
         pass
 
 
+_MISSING = object()
+
+# _rebind_sqlite_engine() 會把「全域」DB 狀態永久切到 sqlite。若不還原，會污染
+# 同一個 pytest 行程中後續在「真實 Postgres」上執行的整合測試 (test_integration_db)：
+# is_sqlite() 因 settings.database_url 被改成 sqlite 而誤判為 True，使 set_tenant_guc
+# 變成 no-op -> RLS 的 app.current_tenant GUC 從未設定 -> INSERT 違反 WITH CHECK
+# (new row violates row-level security policy)。故此處「快照 -> 還原」所有被 _rebind
+# 與 lifespan 動到的全域綁定，使本檔的 sqlite 改動嚴格侷限於自身 module。
+def _snapshot_app_db_state() -> dict:
+    """快照 _rebind_sqlite_engine()/lifespan 會變動的全域 DB 綁定。"""
+    import app.database as database
+    import app.deps as deps
+    import app.routers.auth as auth_router_mod
+
+    snap: dict = {
+        "database_url": settings.database_url,
+        "dev_bootstrap": settings.dev_bootstrap,
+        # database 的 lazy 快取 (PEP 562)：get_engine()/get_sessionmaker() 會寫入。
+        "_engine": database.__dict__.get("_engine"),
+        "_SessionLocal": database.__dict__.get("_SessionLocal"),
+        "attrs": {},
+    }
+    # _rebind 會在這些模組上「設定」public 屬性 (engine / SessionLocal)，
+    # 蓋過 database 的 PEP 562 lazy 行為。記錄其原始有無/值以便還原。
+    for mod, name in (
+        (database, "engine"),
+        (database, "SessionLocal"),
+        (deps, "SessionLocal"),
+        (auth_router_mod, "SessionLocal"),
+    ):
+        snap["attrs"][(mod.__name__, name)] = mod.__dict__.get(name, _MISSING)
+    return snap
+
+
+def _restore_app_db_state(snap: dict) -> None:
+    """還原 _snapshot_app_db_state() 取得的全域 DB 綁定 (避免污染後續測試)。"""
+    import importlib
+
+    import app.database as database
+
+    settings.database_url = snap["database_url"]
+    settings.dev_bootstrap = snap["dev_bootstrap"]
+    # 還原 lazy 快取；下次存取會依還原後的 settings 重新建立正確 (postgres) engine。
+    database._engine = snap["_engine"]
+    database._SessionLocal = snap["_SessionLocal"]
+    for (modname, name), val in snap["attrs"].items():
+        mod = importlib.import_module(modname)
+        if val is _MISSING:
+            mod.__dict__.pop(name, None)  # 原本無此屬性 -> 移除 _rebind 設下的 shadow
+        else:
+            setattr(mod, name, val)
+
+
 @pytest.fixture(scope="module")
 def client():
     """module 範圍 TestClient；先把 DB 綁到 sqlite 暫存檔，再以 with 進入觸發 lifespan
-    (create_all + 種子核心資料 + 種子 app users)。結束後 dispose engine 再刪暫存檔。"""
-    _rebind_sqlite_engine()
-    with TestClient(app) as c:
-        yield c
-    # 先 dispose 綁定 sqlite 檔的 async engine，Windows 才能釋放檔案句柄；再刪暫存檔
-    # (對句柄釋放延遲做短暫重試，避免殘留 cpm_auth_test_*.db)。
-    _dispose_sqlite_engines()
-    _unlink_with_retry(_DB_PATH)
+    (create_all + 種子核心資料 + 種子 app users)。結束後 dispose engine、還原全域 DB
+    狀態、再刪暫存檔。
+
+    以 try/finally 包住 _rebind 與 TestClient：即使 _rebind 中途失敗 (例如 CI 缺
+    aiosqlite，create_async_engine 於設定 settings.database_url=sqlite 之後才拋錯)，
+    finally 仍會把全域狀態還原回 Postgres，確保後續整合測試不被污染。
+    """
+    snap = _snapshot_app_db_state()
+    try:
+        _rebind_sqlite_engine()
+        with TestClient(app) as c:
+            yield c
+    finally:
+        # 順序重要：先 dispose 綁 sqlite 檔的 engine (Windows 釋放句柄)，再還原全域
+        # DB 狀態 (避免污染後續 Postgres 整合測試)，最後重試刪除暫存檔。
+        _dispose_sqlite_engines()
+        _restore_app_db_state(snap)
+        _unlink_with_retry(_DB_PATH)
 
 
 # --------------------------------------------------------------------------- #

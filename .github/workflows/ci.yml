@@ -56,6 +56,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
+          # aiosqlite：tests/test_auth.py 以 sqlite dev 模式執行 (不需 Postgres)。
+          # 它不屬正式 Postgres 依賴 (requirements.txt) 故額外安裝，否則 test_auth
+          # 於匯入時即 ModuleNotFoundError，且其 fixture 會在切到 sqlite 後失敗。
+          pip install aiosqlite
 
       - name: Install PostgreSQL client (psql)
         run: |
@@ -192,7 +196,7 @@ jobs:
           echo "OK: unauthenticated request rejected (401)"
           echo "::endgroup::"
 
-          echo "::group::(a) Create project PRJ-E2E as admin@tw -> expect 200"
+          echo "::group::(a) Create project PRJ-E2E as admin@tw -> expect 201"
           create_code=$(curl -o /tmp/create.json -s -w "%{http_code}" \
             -X POST http://localhost:8080/api/v1/projects \
             -H "Authorization: Bearer ${TW_TOKEN}" \
@@ -210,8 +214,10 @@ jobs:
           cat /tmp/create.json || true
           echo ""
           echo "create HTTP ${create_code}"
-          if [ "${create_code}" != "200" ]; then
-            echo "ERROR: project creation expected 200, got ${create_code}"
+          # POST /projects 依 REST 慣例回 201 Created (見 routers/projects.py 的
+          # status_code=HTTP_201_CREATED)；200/201 皆視為建立成功。
+          if [ "${create_code}" != "200" ] && [ "${create_code}" != "201" ]; then
+            echo "ERROR: project creation expected 200/201, got ${create_code}"
             exit 1
           fi
           echo "::endgroup::"
