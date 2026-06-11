@@ -5,16 +5,19 @@ import { t } from '../i18n'
 /**
  * Login 登入卡片
  *
- * 置中卡片，含帳號 / 密碼輸入（預填示範帳密 admin@tw / demo1234）、
- * 送出按鈕（呼叫 store.login）、錯誤顯示，以及列出兩組示範帳號的提示。
+ * 置中卡片，含帳號 / 密碼輸入、送出按鈕（呼叫 store.login）、錯誤顯示。
+ * 僅在建置時設定 VITE_DEMO_LOGIN=1 時才預填示範帳密（admin@tw / demo1234）
+ * 並顯示示範帳號提示；正式環境預設為空白欄位、不洩漏任何帳密。
  * 登入成功後由 App 依 store.token 切換到 ScheduleBoard。
  */
+const DEMO = import.meta.env.VITE_DEMO_LOGIN === '1'
+
 export default function Login() {
   const { region, loading, error, login } = useScheduleStore()
 
-  // 預填示範帳密，方便評審/開發直接登入。
-  const [username, setUsername] = useState('admin@tw')
-  const [password, setPassword] = useState('demo1234')
+  // 僅 demo 模式預填示範帳密，方便評審/開發直接登入。
+  const [username, setUsername] = useState(DEMO ? 'admin@tw' : '')
+  const [password, setPassword] = useState(DEMO ? 'demo1234' : '')
   // 本地送出失敗旗標：避免顯示其他流程的 store.error。
   const [failed, setFailed] = useState(false)
 
@@ -42,7 +45,7 @@ export default function Login() {
             autoComplete="username"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            placeholder="admin@tw"
+            placeholder={t(region, 'username')}
           />
         </div>
 
@@ -54,7 +57,7 @@ export default function Login() {
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="demo1234"
+            placeholder={t(region, 'password')}
           />
         </div>
 
@@ -68,11 +71,13 @@ export default function Login() {
           {loading ? `${t(region, 'loading')}…` : t(region, 'signIn')}
         </button>
 
-        <div className="login-hint">
-          <div className="login-hint-title">{t(region, 'demoAccounts')}</div>
-          <div className="login-hint-line">admin@tw / demo1234</div>
-          <div className="login-hint-line">admin@cn / demo1234</div>
-        </div>
+        {DEMO && (
+          <div className="login-hint">
+            <div className="login-hint-title">{t(region, 'demoAccounts')}</div>
+            <div className="login-hint-line">admin@tw / demo1234</div>
+            <div className="login-hint-line">admin@cn / demo1234</div>
+          </div>
+        )}
       </form>
     </div>
   )

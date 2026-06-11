@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -42,6 +43,24 @@ logger = logging.getLogger("cpm.core.risk_listener")
 
 # 寫入 sync_event_log 的事件型別 (與 SCHEDULE_PUSH 區隔; worker 以同一佇列處理)
 RISK_PROVISION_SYNC_TYPE = "RISK_PROVISION"
+
+
+async def _notify_risk_bg(region: str, message: str) -> None:
+    """背景風險通知 wrapper (僅吃純字串, 與請求交易完全解耦)。
+
+    FIX-4: 改以 asyncio.create_task 在請求交易之外發送, 避免外部 httpx I/O
+    (LINE / 釘釘, 10s timeout) 阻斷並延長呼叫端 DB 交易。此函式不接觸 db /
+    session / ctx, 僅持有可序列化的純字串, 故即使請求交易已結束亦安全。
+    任何例外一律吞掉並記錄, 絕不外溢。
+    """
+    try:
+        await notifications.notify_risk(region, message)
+    except Exception as exc:  # noqa: BLE001 - 背景通知失敗不可外溢
+        logger.warning(
+            "[risk_listener] 背景風險通知失敗 (已忽略) region=%s: %s",
+            region,
+            exc,
+        )
 
 
 async def evaluate_and_dispatch(
@@ -93,16 +112,20 @@ async def evaluate_and_dispatch(
         event_id,
     )
 
-    # --- 2) Best-effort 區域感知通知 ----------------------------------------
+    # --- 2) Best-effort 區域感知通知 (背景排程, 不阻斷請求交易) -----------------
+    # build_risk_card 為純函式 (僅組字串), 於交易內同步組好卡片; 真正的外部 I/O
+    # (httpx) 改以 asyncio.create_task 丟到背景, wrapper 僅持有純字串。
+    # notified 語意改為「是否成功排程」(scheduled): 排程成功即 True; 回傳鍵維持不變
+    # 以免破壞呼叫端 / 回應 schema。
     notified = False
     try:
         region = (ctx.region or "TW").upper()
         card = notifications.build_risk_card(region, reason, detail)
-        result = await notifications.notify_risk(region, card)
-        notified = bool(result.get("sent", False))
-    except Exception as exc:  # noqa: BLE001 - 通知失敗不可影響主流程
+        asyncio.create_task(_notify_risk_bg(region, card))
+        notified = True
+    except Exception as exc:  # noqa: BLE001 - 排程/組卡片失敗不可影響主流程
         logger.warning(
-            "[risk_listener] 風險通知失敗 (已忽略) project=%s reason=%s: %s",
+            "[risk_listener] 風險通知排程失敗 (已忽略) project=%s reason=%s: %s",
             project_id,
             reason,
             exc,

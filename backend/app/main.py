@@ -384,11 +384,13 @@ async def _seed_core_data() -> None:
 
 
 async def _seed_app_users() -> None:
-    """冪等寫入示範登入帳號 (在 ALL 模式 — pg 與 sqlite — 皆執行)。
+    """冪等寫入示範登入帳號 (僅在 sqlite / dev_bootstrap 模式呼叫)。
 
     以 passlib 雜湊密碼 (pbkdf2_sha256，純 python)，username 不存在才插入。
-    db/init.sql 刻意「不」種 app_users (避免在 SQL 寫死預雜湊)，由此處統一種。
-    需要 tenants 已存在 (FK)；於 pg 由 init.sql 提供、於 sqlite 由 _seed_core_data 提供。
+    安全性修正 FIX-1：正式 Postgres 不再無條件種入 demo1234 帳號 —— 此函式現與
+    _seed_core_data 同一閘門 (is_sqlite() 或 dev_bootstrap)；正式環境改以
+    INITIAL_ADMIN_* 經 _seed_initial_admin 建立管理員。
+    需要 tenants 已存在 (FK)；於 sqlite/dev_bootstrap 由 _seed_core_data 提供。
     """
     from sqlalchemy import select
 
@@ -432,6 +434,117 @@ async def _seed_app_users() -> None:
                     existing.role = role
 
 
+async def _seed_initial_admin() -> None:
+    """於「所有模式」啟動時冪等建立初始管理員 (供正式環境首次啟動)。
+
+    當 settings.initial_admin_username 與 initial_admin_password 皆有值，且該
+    username 尚不存在時：
+      1) 確保對應租戶 (initial_admin_tenant) 列存在；於 Postgres 插入租戶 / 帳號
+         前先於「同一交易」內 set_config('app.current_tenant', tenant, true)，
+         使 RLS WITH CHECK 通過 (sqlite 為 no-op)。
+      2) 插入一個 role=admin 的 AppUser (密碼以 hash_password 雜湊)。
+
+    冪等：已存在則略過。全程 best-effort：絕不因任何錯誤中斷啟動 (try/except + log)。
+    """
+    username = (settings.initial_admin_username or "").strip()
+    password = settings.initial_admin_password or ""
+    if not username or not password:
+        return
+
+    from sqlalchemy import select
+
+    from app import database
+    from app.core.security import hash_password
+    from app.models.orm import AppUser, Tenant
+
+    SessionLocal = database.SessionLocal
+    tenant_id = (settings.initial_admin_tenant or "TENT-9981").strip() or "TENT-9981"
+
+    async with SessionLocal() as session:
+        async with session.begin():
+            # 先設 RLS GUC，後續 tenants / app_users 之 INSERT 才能通過 WITH CHECK。
+            # (app_users 本身無 RLS，但 tenants 於 Postgres 受 RLS 規範)；sqlite no-op。
+            await database.set_tenant_guc(session, tenant_id)
+
+            found = await session.execute(
+                select(AppUser).where(AppUser.username == username)
+            )
+            if found.scalar_one_or_none() is not None:
+                logger.info("Initial admin already present; skipping (%s).", username)
+                return
+
+            existing_tenant = await session.get(Tenant, tenant_id)
+            if existing_tenant is None:
+                session.add(
+                    Tenant(
+                        tenant_id=tenant_id,
+                        name="初始管理租戶 (initial admin tenant)",
+                        region=settings.default_region or "TW",
+                    )
+                )
+
+            session.add(
+                AppUser(
+                    tenant_id=tenant_id,
+                    username=username,
+                    password_hash=hash_password(password),
+                    region=settings.default_region or "TW",
+                    role="admin",
+                    is_active=True,
+                )
+            )
+    logger.info("Initial admin created (username=%s, tenant=%s).", username, tenant_id)
+
+
+async def _assert_prod_has_admin() -> None:
+    """正式環境安全閘：拒絕啟動一個「無人可登入 / 不安全」的系統。
+
+    當 app_env 屬 production 且 auth_required=True 且 app_users 表為空，且未設定
+    任何初始管理員 (INITIAL_ADMIN_USERNAME/PASSWORD) 時 -> raise RuntimeError，
+    避免在正式環境啟動一個沒有任何帳號可登入 (且已關閉 demo 種子) 的系統。
+    """
+    if settings.app_env.lower() not in {"production", "prod"}:
+        return
+    if not settings.auth_required:
+        return
+
+    initial_admin_configured = bool(
+        (settings.initial_admin_username or "").strip()
+        and (settings.initial_admin_password or "")
+    )
+    if initial_admin_configured:
+        return
+
+    from sqlalchemy import func, select
+
+    from app import database
+    from app.models.orm import AppUser
+
+    SessionLocal = database.SessionLocal
+    user_count = 0
+    try:
+        async with SessionLocal() as session:
+            result = await session.execute(select(func.count()).select_from(AppUser))
+            user_count = int(result.scalar() or 0)
+    except Exception as exc:  # noqa: BLE001 - 查詢失敗不應「誤判為空」而擋啟動
+        logger.warning(
+            "Could not verify app_users count for prod safety check "
+            "(continuing): %s",
+            exc,
+        )
+        return
+
+    if user_count == 0:
+        raise RuntimeError(
+            "拒絕啟動：正式環境 (APP_ENV=production) 已啟用認證 (AUTH_REQUIRED=true)，"
+            "但 app_users 為空且未設定初始管理員。請設定 INITIAL_ADMIN_USERNAME 與 "
+            "INITIAL_ADMIN_PASSWORD (並視需要 INITIAL_ADMIN_TENANT) 後重啟。 | "
+            "Refusing to boot: production has auth enabled but no app users exist and "
+            "no initial admin is configured. Set INITIAL_ADMIN_USERNAME and "
+            "INITIAL_ADMIN_PASSWORD (and optionally INITIAL_ADMIN_TENANT)."
+        )
+
+
 async def _ensure_app_users_role_column() -> None:
     """冪等為「既有」app_users 表補上 role 欄位 (供既有 sqlite dev DB 升級)。
 
@@ -468,9 +581,10 @@ async def _ensure_app_users_role_column() -> None:
 async def _bootstrap_database() -> None:
     """啟動時的資料庫初始化 (create_all + 種子)，全程 best-effort。
 
-    - sqlite 或 settings.dev_bootstrap=True：create_all + 種核心資料 + 種帳號。
-    - 其餘 (PostgreSQL 正式環境)：schema/核心資料由 init.sql 權威建立；
-      此處僅種「應用帳號」(init.sql 不種帳號)。
+    - sqlite 或 settings.dev_bootstrap=True：create_all + 種核心資料 + 種 demo 帳號。
+    - 其餘 (PostgreSQL 正式環境)：schema/核心資料由 init.sql 權威建立；不種 demo
+      帳號 (FIX-1)，改由 INITIAL_ADMIN_* 經 _seed_initial_admin 建立管理員。
+    - 所有模式皆於最後嘗試 _seed_initial_admin，並執行正式環境安全閘檢查。
     """
     do_create_and_core = is_sqlite() or settings.dev_bootstrap
 
@@ -495,12 +609,26 @@ async def _bootstrap_database() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.info("app_users.role ensure skipped: %s", exc)
 
-    # 帳號種子：所有模式皆執行 (resilient)。
+    # demo 帳號種子：僅在 sqlite / dev_bootstrap 模式執行 (與 _seed_core_data 同一
+    # 閘門)。正式 Postgres 不再無條件種入 demo1234 帳號 (安全性修正 FIX-1)；
+    # 正式環境改以 INITIAL_ADMIN_* 由 _seed_initial_admin 建立管理員。
+    if do_create_and_core:
+        try:
+            await _seed_app_users()
+            logger.info("App users seeded.")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("App user seeding failed (continuing): %s", exc)
+
+    # 初始管理員：所有模式皆嘗試 (resilient)。須在其他種子「之後」執行，
+    # 確保租戶 (FK) 已就緒、且不與 demo 種子帳號衝突。
     try:
-        await _seed_app_users()
-        logger.info("App users seeded.")
+        await _seed_initial_admin()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("App user seeding failed (continuing): %s", exc)
+        logger.warning("Initial admin seeding failed (continuing): %s", exc)
+
+    # 正式環境安全閘：若 production + 強制認證 + app_users 為空 + 未設定初始管理員，
+    # 則拒絕啟動 (避免啟動一個無人可登入 / 不安全的正式系統)。
+    await _assert_prod_has_admin()
 
 
 @asynccontextmanager

@@ -11,10 +11,12 @@ recompute_project() 為全系統共用的重算入口，create / add-task / upda
 
 from __future__ import annotations
 
+import functools
 import io
 import uuid
 import logging
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, delete as sa_delete
@@ -32,7 +34,6 @@ from app.schemas.schedule import (
 )
 from app.core.cpm_engine import calculate_cpm, project_duration, critical_path
 from app.automation import reports
-from app.automation import notifications
 
 logger = logging.getLogger("cpm.routers.projects")
 
@@ -164,6 +165,8 @@ async def recompute_project(
 
     這是 create / add-task / update / duration / delete 等路徑共用的重算入口。
     CPM 為純函式（無 DB），此處負責持久化結果。
+
+    notify: 已保留作呼叫端相容；FIX-4 後不再於請求交易內阻斷式發送通知 (no-op)。
     """
     tasks = await _load_tasks(db, project.project_id)
     deps = await _load_dependencies(db, project.project_id)
@@ -202,24 +205,12 @@ async def recompute_project(
 
     project_out = _to_project_out(project, tasks, deps, task_results, duration)
 
-    # 重算後（best-effort、非阻斷）發送通知：中國區走釘釘，其餘走 LINE
-    if notify:
-        try:
-            await _dispatch_notification(project_out)
-        except Exception as exc:  # noqa: BLE001 - 通知失敗不可影響主流程
-            logger.warning("Notification dispatch failed (ignored): %s", exc)
-
+    # 安全修正 (FIX-4): 移除每次編輯都阻斷請求交易的 best-effort 通知。
+    # 原本 await notify (LINE / 釘釘 httpx, 10s timeout) 是在 get_db 的
+    # session.begin() 交易內進行, 會延長交易並把外部 I/O 失敗風險帶進主流程,
+    # 且逐編輯通知為雜訊。有意義的風險通知改由 risk_listener 以背景任務發送。
+    # 保留 notify 參數僅為呼叫端相容 (目前為 no-op)。
     return project_out
-
-
-async def _dispatch_notification(project_out: ProjectOut) -> None:
-    """重算後的非阻斷通知掛鉤：依區域選擇釘釘 / LINE。"""
-    region = (project_out.region or "TW").upper()
-    summary = notifications.build_schedule_summary(project_out, region)
-    if region in ("CN", "CHINA"):
-        await notifications.notify_dingtalk(summary)
-    else:
-        await notifications.notify_line(summary)
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +386,10 @@ async def project_report(
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     project_out = await get_project(project_id, ctx=ctx, db=db)
 
-    pdf_bytes = reports.generate_schedule_pdf(project_out, project.region)
+    # reportlab 產生 PDF 為 CPU 密集的同步作業, 以工作執行緒執行避免阻塞 event loop。
+    pdf_bytes = await anyio.to_thread.run_sync(
+        functools.partial(reports.generate_schedule_pdf, project_out, project.region)
+    )
     filename = f"schedule_{project_id}.pdf"
     return StreamingResponse(
         io.BytesIO(pdf_bytes),

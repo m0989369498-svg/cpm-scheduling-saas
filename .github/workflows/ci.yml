@@ -132,7 +132,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Prepare environment file
-        run: cp .env.example .env
+        run: |
+          cp .env.example .env
+          # FIX-1：demo 種子帳號現僅在 sqlite / DEV_BOOTSTRAP 模式建立。e2e 走真實
+          # Postgres，故顯式開啟 bootstrap 讓 compose (由 .env 內插) 種入 admin@tw 等
+          # demo 帳號，使後續 admin@tw/demo1234 登入流程維持綠燈。
+          echo "DEV_BOOTSTRAP=true" >> .env
 
       - name: Build and start the stack
         run: docker compose up -d --build

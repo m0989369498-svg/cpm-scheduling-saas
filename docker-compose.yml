@@ -67,6 +67,13 @@ services:
       # 下方僅為未設定時的本機開發回退值。
       JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-DO-NOT-USE-IN-PROD-change-me}
       JWT_EXPIRE_MINUTES: "720"
+      # --- 種子 / 初始管理員 (FIX-1) ---
+      # DEV_BOOTSTRAP=true 時於非 sqlite 亦 create_all + 種 demo 帳號 (e2e / 本機)；
+      # 正式環境留 false，改以 INITIAL_ADMIN_* 首次啟動建立管理員。
+      DEV_BOOTSTRAP: ${DEV_BOOTSTRAP:-false}
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      INITIAL_ADMIN_TENANT: ${INITIAL_ADMIN_TENANT:-TENT-9981}
       LINE_CHANNEL_ACCESS_TOKEN: ""
       DINGTALK_WEBHOOK_URL: ""
       ERP_SCAN_INTERVAL_SECONDS: "300"
@@ -108,6 +115,11 @@ services:
       # 下方僅為未設定時的本機開發回退值。
       JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-DO-NOT-USE-IN-PROD-change-me}
       JWT_EXPIRE_MINUTES: "720"
+      # --- 種子 / 初始管理員 (FIX-1；與 backend 一致) ---
+      DEV_BOOTSTRAP: ${DEV_BOOTSTRAP:-false}
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      INITIAL_ADMIN_TENANT: ${INITIAL_ADMIN_TENANT:-TENT-9981}
       LINE_CHANNEL_ACCESS_TOKEN: ""
       DINGTALK_WEBHOOK_URL: ""
       ERP_SCAN_INTERVAL_SECONDS: "300"

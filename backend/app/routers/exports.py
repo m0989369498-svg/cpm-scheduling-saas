@@ -24,9 +24,11 @@
 
 from __future__ import annotations
 
+import functools
 import io
 import logging
 
+import anyio
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -474,7 +476,10 @@ async def export_xlsx(
     project_out, evm, _pending = await _gather_export_context(db, project_id, ctx)
     progress_rows = await _load_progress(db, project_id)
 
-    xlsx_bytes = _build_xlsx(project_out, evm, progress_rows)
+    # openpyxl 組裝為 CPU/IO 密集的同步作業, 以工作執行緒執行避免阻塞 event loop。
+    xlsx_bytes = await anyio.to_thread.run_sync(
+        functools.partial(_build_xlsx, project_out, evm, progress_rows)
+    )
     filename = f"export_{project_id}.xlsx"
     return StreamingResponse(
         io.BytesIO(xlsx_bytes),
@@ -493,7 +498,10 @@ async def export_pdf(
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     project_out, evm, pending = await _gather_export_context(db, project_id, ctx)
 
-    pdf_bytes = _build_pdf(project_out, evm, pending, project.region)
+    # reportlab 組裝為 CPU 密集的同步作業, 以工作執行緒執行避免阻塞 event loop。
+    pdf_bytes = await anyio.to_thread.run_sync(
+        functools.partial(_build_pdf, project_out, evm, pending, project.region)
+    )
     filename = f"export_{project_id}.pdf"
     return StreamingResponse(
         io.BytesIO(pdf_bytes),

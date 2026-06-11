@@ -17,8 +17,10 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 
+import anyio
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -165,11 +167,16 @@ async def simulate(
         for r in risk_rows
     }
 
-    result: SimulationResult = simulate_schedule(
-        definitions,
-        risk,
-        iterations=payload.iterations,
-        deadline=payload.deadline,
+    # CPU 密集的蒙地卡羅模擬以工作執行緒執行, 避免阻塞 async event loop
+    # (大量 iterations 仍受 SimulationRequest 上限 10000 保護)。
+    result: SimulationResult = await anyio.to_thread.run_sync(
+        functools.partial(
+            simulate_schedule,
+            definitions,
+            risk,
+            iterations=payload.iterations,
+            deadline=payload.deadline,
+        )
     )
 
     # --- 回寫 criticality_index 至 task_risk_parameters ---

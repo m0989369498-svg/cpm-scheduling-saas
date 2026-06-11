@@ -49,6 +49,22 @@ class Settings(BaseSettings):
     # dev_bootstrap：在「非 sqlite」DB 上也強制 create_all + 種子 (預設關閉)。
     dev_bootstrap: bool = False                       # env DEV_BOOTSTRAP
 
+    # --- 首次啟動初始管理員 (Initial Admin) ---------------------------------
+    # 於「所有模式」啟動時皆會嘗試建立 (見 main._seed_initial_admin)：當
+    # username + password 皆有值且該帳號尚不存在時，確保租戶列存在後插入一個
+    # role=admin 的帳號。供正式環境首次啟動建立可登入的管理員 (取代僅 dev/sqlite
+    # 才有的 demo 種子帳號)。預設留空 => 不建立。
+    initial_admin_username: str = ""                  # env INITIAL_ADMIN_USERNAME
+    initial_admin_password: str = ""                  # env INITIAL_ADMIN_PASSWORD
+    initial_admin_tenant: str = "TENT-9981"           # env INITIAL_ADMIN_TENANT
+
+    # --- 登入速率限制 / 鎖定 (Login rate-limit; 見 core/ratelimit.py) -------
+    # 同一 (username|ip) 連續登入失敗達 login_max_failures 次後，鎖定
+    # login_lockout_seconds 秒 (期間回 429)。優先用 Redis 計數，無 Redis 時
+    # 退回行程內記憶體計數 (測試 / 單機亦可運作)。
+    login_max_failures: int = 5                       # env LOGIN_MAX_FAILURES
+    login_lockout_seconds: int = 300                  # env LOGIN_LOCKOUT_SECONDS
+
     # --- 通知 (選填；空值代表 no-op / 僅記錄日誌) ---
     line_channel_access_token: str = ""  # LINE 推播 (台灣)
     dingtalk_webhook_url: str = ""       # 釘釘 webhook (中國大陸)

@@ -122,11 +122,11 @@ class CriticalityItem(BaseModel):
 class SimulationRequest(BaseModel):
     """蒙地卡羅模擬請求。
 
-    iterations  模擬次數（預設 1000）。
+    iterations  模擬次數（預設 1000；上限 10000，避免 CPU 資源耗盡攻擊）。
     deadline    合約工期 / 期限（天）；提供時計算準時完成機率。
     """
 
-    iterations: int = 1000
+    iterations: int = Field(default=1000, ge=1, le=10000)
     deadline: int | None = None
 
 
