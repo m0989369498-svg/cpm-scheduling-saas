@@ -1,11 +1,12 @@
 # =============================================================================
 # Frontend Dockerfile — 多階段建置
-# Stage 1: node:20-alpine 編譯 React + Vite -> 靜態檔
+# Stage 1: node:24-alpine 編譯 React + Vite -> 靜態檔
+#   (node 24 = npm 11，與開發機一致；npm 10 讀 npm 11 lockfile 會 EBADPLATFORM)
 # Stage 2: nginx:alpine 服務 /usr/share/nginx/html (SPA)
 # =============================================================================
 
 # ---- Stage 1: build ---------------------------------------------------------
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 
 WORKDIR /app
 

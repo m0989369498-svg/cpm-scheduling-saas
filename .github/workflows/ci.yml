@@ -115,10 +115,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node 20
+      # Node 24 (npm 11)：與本機開發一致 — npm 11 產生的 lockfile 在 npm 10 的
+      # npm ci 下會因平台 optional 套件標記差異炸 EBADPLATFORM。
+      - name: Set up Node 24
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
