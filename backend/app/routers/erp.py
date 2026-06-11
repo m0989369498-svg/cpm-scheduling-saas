@@ -153,6 +153,9 @@ async def sync_erp(
         event = SyncEvent(
             tenant_id=ctx.tenant_id,
             mapping_id=mapping.mapping_id,
+            # Batch 4 (PERF-3)：直接寫入專案代碼欄位 (除 payload 外)，
+            # 供 dashboard / exports 以索引查詢，免掃 payload JSON。
+            project_id=project.project_id,
             sync_type=payload.sync_type or "SCHEDULE_PUSH",
             payload=sync_payload,
             status="PENDING",

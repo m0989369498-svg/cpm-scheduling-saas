@@ -94,19 +94,21 @@ async def _gather_export_context(
 async def _pending_risk_events(
     db: AsyncSession, tenant_id: str, project_id: str
 ) -> list[dict]:
-    """取得本租戶、本專案待處理 (PENDING) 的風險預警事件 payload 清單。"""
+    """取得本租戶、本專案待處理 (PENDING) 的風險預警事件 payload 清單。
+
+    Batch 4 (PERF-3)：直接以 sync_event_log.project_id 欄位過濾 (走複合索引
+    (tenant_id, sync_type, status))，不再撈出全部 payload JSON 於 Python 比對。
+    舊列的 project_id 已由遷移 0003 / main.py sqlite ALTER 自 payload 回填。
+    """
     result = await db.execute(
         select(SyncEvent.payload).where(
             SyncEvent.tenant_id == tenant_id,
             SyncEvent.sync_type == RISK_PROVISION_SYNC_TYPE,
             SyncEvent.status == "PENDING",
+            SyncEvent.project_id == project_id,
         )
     )
-    out: list[dict] = []
-    for (payload,) in result.all():
-        if isinstance(payload, dict) and str(payload.get("project_id")) == project_id:
-            out.append(payload)
-    return out
+    return [payload for (payload,) in result.all() if isinstance(payload, dict)]
 
 
 def _fmt_num(value: float | None, digits: int = 2) -> str:

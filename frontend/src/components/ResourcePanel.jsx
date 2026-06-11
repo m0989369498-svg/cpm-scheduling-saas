@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useScheduleStore } from '../store/scheduleStore';
+import { useScheduleStore, isLoading, getError } from '../store/scheduleStore';
 import { t } from '../i18n';
 
 /**
@@ -22,15 +22,19 @@ import { t } from '../i18n';
 const DEFAULT_RESOURCE_TYPES = ['crane', 'manpower'];
 
 export default function ResourcePanel({ region = 'TW' }) {
+  const store = useScheduleStore();
   const {
     currentProject,
     resources,
     leveling,
-    loading,
     loadResources,
     saveResources,
     runLeveling,
-  } = useScheduleStore();
+  } = store;
+
+  // Batch 4：本面板僅讀取 resources / leveling scope 的載入與錯誤
+  const busy = isLoading(store, 'resources') || isLoading(store, 'leveling');
+  const panelError = getError(store, 'resources') || getError(store, 'leveling');
 
   // 本地草稿：limits {res: capacity}、demands {taskId: {res: qty}}
   const [limitDrafts, setLimitDrafts] = useState({});
@@ -117,13 +121,21 @@ export default function ResourcePanel({ region = 'TW' }) {
   };
 
   const handleSave = async () => {
-    await saveResources(buildConfig());
+    try {
+      await saveResources(buildConfig());
+    } catch (e) {
+      /* 錯誤已存於 errors.resources */
+    }
   };
 
   const handleRunLeveling = async () => {
     // 先儲存最新草稿，再執行撫平，確保引擎使用畫面上的設定
-    await saveResources(buildConfig());
-    await runLeveling();
+    try {
+      await saveResources(buildConfig());
+      await runLeveling();
+    } catch (e) {
+      /* 錯誤已存於 errors.resources / errors.leveling */
+    }
   };
 
   if (!currentProject) {
@@ -139,6 +151,14 @@ export default function ResourcePanel({ region = 'TW' }) {
   return (
     <div className="panel" style={{ background: '#fff' }}>
       <h3 style={{ marginTop: 0, color: '#2c3e50' }}>{t(region, 'resourceLeveling')}</h3>
+
+      {/* ===== 面板自身 scope 的載入/錯誤 ===== */}
+      {busy && <div className="notice loading">{t(region, 'loading')}…</div>}
+      {panelError && (
+        <div className="notice error">
+          {t(region, 'error')}: {String(panelError)}
+        </div>
+      )}
 
       {/* ===== 資源上限 ===== */}
       <div style={{ marginBottom: '16px' }}>
@@ -209,10 +229,10 @@ export default function ResourcePanel({ region = 'TW' }) {
 
       {/* ===== 動作列 ===== */}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-        <button onClick={handleSave} disabled={loading} className="secondary">
+        <button onClick={handleSave} disabled={busy} className="secondary">
           {t(region, 'save')}
         </button>
-        <button onClick={handleRunLeveling} disabled={loading} style={{ background: '#16a085', borderColor: '#16a085' }}>
+        <button onClick={handleRunLeveling} disabled={busy} style={{ background: '#16a085', borderColor: '#16a085' }}>
           {t(region, 'runLeveling')}
         </button>
       </div>

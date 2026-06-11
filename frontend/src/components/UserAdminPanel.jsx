@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { useScheduleStore } from '../store/scheduleStore'
+import { useScheduleStore, isLoading, getError } from '../store/scheduleStore'
 import { t } from '../i18n'
 
 /**
@@ -20,12 +20,11 @@ import { t } from '../i18n'
 const ROLES = ['viewer', 'editor', 'admin']
 
 export default function UserAdminPanel({ region }) {
+  const store = useScheduleStore()
   const {
     role,
     users,
     trash,
-    loading,
-    error,
     region: storeRegion,
     loadUsers,
     createUser,
@@ -34,7 +33,11 @@ export default function UserAdminPanel({ region }) {
     loadTrash,
     restoreProject,
     purgeProject,
-  } = useScheduleStore()
+  } = store
+
+  // Batch 4：本面板僅讀取 users / trash scope 的載入與錯誤
+  const busy = isLoading(store, 'users') || isLoading(store, 'trash')
+  const panelError = getError(store, 'users') || getError(store, 'trash')
 
   // 新增使用者表單
   const [form, setForm] = useState({ username: '', password: '', role: 'viewer' })
@@ -71,7 +74,7 @@ export default function UserAdminPanel({ region }) {
       })
       setForm({ username: '', password: '', role: 'viewer' })
     } catch (err) {
-      /* 錯誤已存於 store.error */
+      /* 錯誤已存於 errors.users */
     }
   }
 
@@ -119,10 +122,10 @@ export default function UserAdminPanel({ region }) {
         {t(region, 'userManagement')}
       </h2>
 
-      {loading && <div className="notice loading">{t(region, 'loading')}…</div>}
-      {error && (
+      {busy && <div className="notice loading">{t(region, 'loading')}…</div>}
+      {panelError && (
         <div className="notice error">
-          {t(region, 'error')}: {String(error)}
+          {t(region, 'error')}: {String(panelError)}
         </div>
       )}
 

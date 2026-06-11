@@ -143,6 +143,9 @@ export const I18N = {
     conflictReloaded: '版本衝突：專案已被其他人修改，已重新載入最新資料',
     plannedStart: '計畫開工',
     plannedFinish: '計畫完工',
+    // ---- Batch 4：範圍化載入/錯誤 + 工作階段復原 ----
+    sessionExpired: '登入階段已逾期，請重新登入',
+    recalculating: '重新計算中…',
     statuses: {
       PENDING: '待辦',
       IN_PROGRESS: '進行中',
@@ -291,6 +294,9 @@ export const I18N = {
     conflictReloaded: '版本冲突：项目已被其他人修改，已重新加载最新数据',
     plannedStart: '计划开工',
     plannedFinish: '计划完工',
+    // ---- Batch 4：范围化加载/错误 + 会话恢复 ----
+    sessionExpired: '登录会话已过期，请重新登录',
+    recalculating: '重新计算中…',
     statuses: {
       PENDING: '待办',
       IN_PROGRESS: '进行中',

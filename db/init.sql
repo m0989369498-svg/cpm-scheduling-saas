@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS erp_integration.sync_event_log (
     event_id     UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id    VARCHAR(50)  NOT NULL,
     mapping_id   BIGINT       REFERENCES erp_integration.task_mapping(mapping_id),
+    project_id   VARCHAR(64),                             -- Batch 4 (PERF-3)：事件所屬專案 (可為 NULL，舊列由遷移回填)
     sync_type    VARCHAR(50)  NOT NULL,                   -- e.g. SCHEDULE_PUSH
     payload      JSONB        NOT NULL,                   -- 拋轉內容 (標準化 canonical)
     status       VARCHAR(20)  NOT NULL DEFAULT 'PENDING', -- PENDING/SUCCESS/DEAD
@@ -172,6 +173,12 @@ CREATE TABLE IF NOT EXISTS erp_integration.sync_event_log (
 -- worker 掃描用索引：WHERE status='PENDING' AND retry_count < max
 CREATE INDEX IF NOT EXISTS idx_sync_status
     ON erp_integration.sync_event_log(status, retry_count);
+
+-- Batch 4 (PERF-3)：dashboard / exports 的風險事件統計查詢用複合索引
+--   WHERE tenant_id = ? AND sync_type = 'RISK_PROVISION' AND status = 'PENDING'
+--   (GROUP BY project_id) —— 取代以往掃描全部 payload JSON 的做法。
+CREATE INDEX IF NOT EXISTS idx_sync_tenant_type_status
+    ON erp_integration.sync_event_log(tenant_id, sync_type, status);
 
 -- =============================================================================
 -- 4. 種子資料 (SEED)

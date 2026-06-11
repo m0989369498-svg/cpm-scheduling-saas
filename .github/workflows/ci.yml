@@ -131,6 +131,12 @@ jobs:
             npm install
           fi
 
+      # QUAL-2 (Batch 4)：vitest 單元測試（store / GanttChart / ProjectForm / i18n）
+      # 置於 build 之前 — 測試紅燈即擋下建置，縮短回饋循環。
+      - name: Run frontend unit tests
+        working-directory: frontend
+        run: npm test
+
       - name: Build
         working-directory: frontend
         run: npm run build

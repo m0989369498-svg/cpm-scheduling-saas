@@ -24,10 +24,11 @@ import logging
 from datetime import date, datetime, timezone
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import select, delete as sa_delete
+from sqlalchemy import func, select, delete as sa_delete, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.deps import verify_tenant, get_db, TenantContext, require_role
 from app.models.orm import Project, ProjectHoliday, Task, TaskDependency
@@ -141,6 +142,32 @@ async def _load_holidays(db: AsyncSession, project_id: str) -> list[ProjectHolid
 async def _load_holiday_dates(db: AsyncSession, project_id: str) -> set[date]:
     """載入專案例外假日的日期集合（供工作日曆換算）。"""
     return {h.holiday_date for h in await _load_holidays(db, project_id)}
+
+
+async def _task_aggregates(
+    db: AsyncSession, project_ids: list[str]
+) -> dict[str, tuple[int, int]]:
+    """以「單一」彙總查詢取得每專案的 (task_count, max_ef)。
+
+    PERF-1: 取代逐專案 hydrate 全部 Task ORM 列（僅為了 count / max(ef)），
+    專案數 N 時由 N 次查詢降為 1 次 GROUP BY。回傳 {project_id: (count, max_ef)}；
+    無任務的專案不在結果中（呼叫端以 (0, 0) 預設）。
+    """
+    if not project_ids:
+        return {}
+    result = await db.execute(
+        select(
+            Task.project_id,
+            func.count().label("task_count"),
+            func.max(Task.ef).label("max_ef"),
+        )
+        .where(Task.project_id.in_(project_ids))
+        .group_by(Task.project_id)
+    )
+    return {
+        row.project_id: (int(row.task_count or 0), int(row.max_ef or 0))
+        for row in result.all()
+    }
 
 
 def _dependency_maps(
@@ -309,17 +336,46 @@ async def recompute_project(
 
     duration = project_duration(task_results)
 
-    # 回寫 CPM 結果到每筆任務
+    # PERF-2 回寫 CPM 結果：
+    #   (a) skip-no-op —— 僅收集 es/ef/ls/lf/float_time/is_critical「實際變動」的列；
+    #   (b) 以「單一」bulk UPDATE（SQLAlchemy 2.0 executemany-by-pk）持久化，
+    #       取代逐列 attribute 指派（unit-of-work 每列發一句 UPDATE）。
+    # in-session 物件以 set_committed_value 同步新值（不標記 dirty，避免
+    # unit-of-work 重複 UPDATE），使同一 session 後續讀取（identity map）正確。
+    changed: list[dict] = []
     for t in tasks:
         res = task_results.get(t.task_id)
         if res is None:
             continue
-        t.es = res.es
-        t.ef = res.ef
-        t.ls = res.ls
-        t.lf = res.lf
-        t.float_time = res.float_time
-        t.is_critical = res.is_critical
+        if (
+            (t.es or 0) == int(res.es)
+            and (t.ef or 0) == int(res.ef)
+            and (t.ls or 0) == int(res.ls)
+            and (t.lf or 0) == int(res.lf)
+            and (t.float_time or 0) == int(res.float_time)
+            and bool(t.is_critical) == bool(res.is_critical)
+        ):
+            continue
+        changed.append(
+            {
+                "id": t.id,
+                "es": int(res.es),
+                "ef": int(res.ef),
+                "ls": int(res.ls),
+                "lf": int(res.lf),
+                "float_time": int(res.float_time),
+                "is_critical": bool(res.is_critical),
+            }
+        )
+        set_committed_value(t, "es", int(res.es))
+        set_committed_value(t, "ef", int(res.ef))
+        set_committed_value(t, "ls", int(res.ls))
+        set_committed_value(t, "lf", int(res.lf))
+        set_committed_value(t, "float_time", int(res.float_time))
+        set_committed_value(t, "is_critical", bool(res.is_critical))
+
+    if changed:
+        await db.execute(sa_update(Task), changed)
 
     await db.flush()
 
@@ -340,6 +396,12 @@ async def recompute_project(
 # ---------------------------------------------------------------------------
 @router.get("", response_model=list[ProjectSummary])
 async def list_projects(
+    limit: int | None = Query(
+        default=None, ge=1, description="選配分頁: 回傳專案數上限 (預設全部)。"
+    ),
+    offset: int | None = Query(
+        default=None, ge=0, description="選配分頁: 起始偏移 (預設 0)。"
+    ),
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
 ) -> list[ProjectSummary]:
@@ -351,8 +413,10 @@ async def list_projects(
     冗餘但無害 (與 RLS 結果一致)。
 
     軟刪除（FEAT-4）：排除已進回收桶（deleted_at 非 NULL）的專案。
+    PERF-1：task_count / project_duration 以單一 GROUP BY 彙總查詢取得
+    （不 hydrate Task ORM 列）；選配 limit/offset 分頁（預設全部 = 原行為）。
     """
-    result = await db.execute(
+    stmt = (
         select(Project)
         .where(
             Project.tenant_id == ctx.tenant_id,
@@ -360,19 +424,25 @@ async def list_projects(
         )
         .order_by(Project.created_at)
     )
+    if offset is not None:
+        stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    result = await db.execute(stmt)
     projects = list(result.scalars().all())
+
+    aggregates = await _task_aggregates(db, [p.project_id for p in projects])
 
     summaries: list[ProjectSummary] = []
     for p in projects:
-        tasks = await _load_tasks(db, p.project_id)
-        max_ef = max((t.ef or 0 for t in tasks), default=0)
+        task_count, max_ef = aggregates.get(p.project_id, (0, 0))
         summaries.append(
             ProjectSummary(
                 project_id=p.project_id,
                 project_name=p.project_name,
                 region=p.region,
                 tenant_id=p.tenant_id,
-                task_count=len(tasks),
+                task_count=task_count,
                 project_duration=max_ef,
             )
         )
@@ -386,7 +456,10 @@ async def list_trash(
     db: AsyncSession = Depends(get_db),
     _role: None = Depends(require_role("admin")),
 ) -> list[ProjectSummary]:
-    """回收桶（FEAT-4，admin 限定）：列出已軟刪除的專案摘要。"""
+    """回收桶（FEAT-4，admin 限定）：列出已軟刪除的專案摘要。
+
+    PERF-1：task_count / project_duration 以單一 GROUP BY 彙總查詢取得。
+    """
     result = await db.execute(
         select(Project)
         .where(
@@ -397,17 +470,18 @@ async def list_trash(
     )
     projects = list(result.scalars().all())
 
+    aggregates = await _task_aggregates(db, [p.project_id for p in projects])
+
     summaries: list[ProjectSummary] = []
     for p in projects:
-        tasks = await _load_tasks(db, p.project_id)
-        max_ef = max((t.ef or 0 for t in tasks), default=0)
+        task_count, max_ef = aggregates.get(p.project_id, (0, 0))
         summaries.append(
             ProjectSummary(
                 project_id=p.project_id,
                 project_name=p.project_name,
                 region=p.region,
                 tenant_id=p.tenant_id,
-                task_count=len(tasks),
+                task_count=task_count,
                 project_duration=max_ef,
             )
         )
@@ -526,36 +600,33 @@ async def get_project(
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
 ) -> ProjectOut:
-    """載入專案 DAG 並回傳快取的 CPM 結果；若缺值則重算。"""
+    """載入專案並以「已持久化」的 CPM 結果欄位回應（PERF-4）。
+
+    recompute_project() 於所有寫入路徑都會持久化 es/ef/ls/lf/float_time/
+    is_critical，故讀取端點直接以 Task 列組裝回應，「不」重跑 calculate_cpm。
+    僅當結果「看似未算過」（每個任務 es==0 且 ef==0、且存在 duration>0 者）
+    時重算一次後回應（兼容歷史資料 / 外部直寫）。
+    """
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     tasks = await _load_tasks(db, project_id)
     deps = await _load_dependencies(db, project_id)
 
-    # 判斷是否需要重算：有任務但 ef 全為 0（從未算過）
-    needs_recompute = bool(tasks) and all((t.ef or 0) == 0 for t in tasks)
+    needs_recompute = (
+        bool(tasks)
+        and all((t.es or 0) == 0 and (t.ef or 0) == 0 for t in tasks)
+        and any((t.duration or 0) > 0 for t in tasks)
+    )
     if needs_recompute:
         return await recompute_project(db, project, notify=False)
 
-    definitions = _build_task_definitions(tasks, deps)
-    if definitions:
-        try:
-            task_results = calculate_cpm(definitions)
-            duration = project_duration(task_results)
-        except ValueError:
-            # 資料異常時退回 DB 內既有快取值
-            task_results = {}
-            duration = max((t.ef or 0 for t in tasks), default=0)
-    else:
-        task_results = {}
-        duration = 0
+    duration = max((t.ef or 0 for t in tasks), default=0)
 
     holidays: set[date] = set()
     if project.start_date is not None:
         holidays = await _load_holiday_dates(db, project_id)
 
-    return _to_project_out(
-        project, tasks, deps, task_results, duration, holidays=holidays
-    )
+    # task_results 傳空 dict -> _to_project_out 直接以 DB 持久化欄位組裝 TaskResult。
+    return _to_project_out(project, tasks, deps, {}, duration, holidays=holidays)
 
 
 @router.put("/{project_id}", response_model=ProjectOut)

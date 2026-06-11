@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react'
-import { useScheduleStore } from '../store/scheduleStore'
+import { useScheduleStore, isLoading, getError } from '../store/scheduleStore'
 import { t } from '../i18n'
 
 /**
@@ -14,7 +14,12 @@ import { t } from '../i18n'
  * 唯讀（viewer 亦可檢視）；require_role 由後端 GET /dashboard 不設限。
  */
 export default function DashboardView({ region, onOpenProject }) {
-  const { dashboard, loading, error, loadDashboard, loadProject } = useScheduleStore()
+  const store = useScheduleStore()
+  const { dashboard, loadDashboard, loadProject } = store
+
+  // Batch 4：本視圖僅讀取 dashboard scope 的載入與錯誤
+  const dashLoading = isLoading(store, 'dashboard')
+  const dashError = getError(store, 'dashboard')
 
   // 掛載時載入儀表板彙總
   useEffect(() => {
@@ -30,7 +35,7 @@ export default function DashboardView({ region, onOpenProject }) {
       await loadProject(pid)
       if (typeof onOpenProject === 'function') onOpenProject(pid)
     } catch (e) {
-      /* 錯誤已存於 store.error */
+      /* 錯誤已存於 errors.project（排程板的狀態列會顯示） */
     }
   }
 
@@ -47,10 +52,10 @@ export default function DashboardView({ region, onOpenProject }) {
         {t(region, 'portfolio')}
       </h2>
 
-      {loading && <div className="notice loading">{t(region, 'loading')}…</div>}
-      {error && (
+      {dashLoading && <div className="notice loading">{t(region, 'loading')}…</div>}
+      {dashError && (
         <div className="notice error">
-          {t(region, 'error')}: {String(error)}
+          {t(region, 'error')}: {String(dashError)}
         </div>
       )}
 
@@ -78,7 +83,7 @@ export default function DashboardView({ region, onOpenProject }) {
       )}
 
       {/* ===== 專案卡片 ===== */}
-      {projects.length === 0 && !loading ? (
+      {projects.length === 0 && !dashLoading ? (
         <div style={{ padding: '40px', textAlign: 'center', color: '#999' }}>
           {t(region, 'project')} — {t(region, 'dashboard')}
         </div>

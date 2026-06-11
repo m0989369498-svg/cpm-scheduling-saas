@@ -9,8 +9,8 @@ import { t } from '../i18n';
  *   defaultRegion : 'TW' | 'CN'      (任務區域預設，取自 store.region)
  *   onSubmit    : (payload) => Promise  接收 ProjectCreate 形狀；成功後外層關閉
  *   onCancel    : () => void
- *   serverError : string | null      來自 store.error（後端錯誤回顯）
- *   submitting  : boolean            來自 store.loading
+ *   serverError : string | null      來自 errors.mutation（後端錯誤回顯；開啟表單時已清除）
+ *   submitting  : boolean            來自 loading.mutation（mutation scope）
  *
  * payload (ProjectCreate)：
  *   {

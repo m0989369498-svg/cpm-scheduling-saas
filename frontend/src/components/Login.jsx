@@ -1,11 +1,13 @@
 import React, { useState } from 'react'
-import { useScheduleStore } from '../store/scheduleStore'
+import { useScheduleStore, isLoading, getError } from '../store/scheduleStore'
 import { t } from '../i18n'
 
 /**
  * Login 登入卡片
  *
  * 置中卡片，含帳號 / 密碼輸入、送出按鈕（呼叫 store.login）、錯誤顯示。
+ * Batch 4：採用 scoped 狀態 — 僅讀取 auth scope 的 loading/error；
+ * errors.auth 亦承載 401 攔截器設定的 sessionExpired（權杖逾期）訊息。
  * 僅在建置時設定 VITE_DEMO_LOGIN=1 時才預填示範帳密（admin@tw / demo1234）
  * 並顯示示範帳號提示；正式環境預設為空白欄位、不洩漏任何帳密。
  * 登入成功後由 App 依 store.token 切換到 ScheduleBoard。
@@ -13,12 +15,15 @@ import { t } from '../i18n'
 const DEMO = import.meta.env.VITE_DEMO_LOGIN === '1'
 
 export default function Login() {
-  const { region, loading, error, login } = useScheduleStore()
+  const store = useScheduleStore()
+  const { region, login } = store
+  const authLoading = isLoading(store, 'auth')
+  const authError = getError(store, 'auth')
 
   // 僅 demo 模式預填示範帳密，方便評審/開發直接登入。
   const [username, setUsername] = useState(DEMO ? 'admin@tw' : '')
   const [password, setPassword] = useState(DEMO ? 'demo1234' : '')
-  // 本地送出失敗旗標：避免顯示其他流程的 store.error。
+  // 本地送出失敗旗標：搭配 errors.auth（僅 auth scope）顯示登入失敗訊息。
   const [failed, setFailed] = useState(false)
 
   const handleSubmit = async (e) => {
@@ -61,14 +66,15 @@ export default function Login() {
           />
         </div>
 
-        {failed && (
+        {/* auth scope 錯誤：登入失敗（本地旗標）或 401 攔截器設定的 sessionExpired */}
+        {(failed || authError) && (
           <div className="login-error">
-            {error ? String(error) : t(region, 'loginFailed')}
+            {authError ? String(authError) : t(region, 'loginFailed')}
           </div>
         )}
 
-        <button type="submit" className="login-submit" disabled={loading}>
-          {loading ? `${t(region, 'loading')}…` : t(region, 'signIn')}
+        <button type="submit" className="login-submit" disabled={authLoading}>
+          {authLoading ? `${t(region, 'loading')}…` : t(region, 'signIn')}
         </button>
 
         {DEMO && (

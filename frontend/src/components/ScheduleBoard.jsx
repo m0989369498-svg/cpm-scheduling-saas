@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useScheduleStore } from '../store/scheduleStore';
+import { useScheduleStore, isLoading, getError } from '../store/scheduleStore';
 import { t } from '../i18n';
 import { reportUrl, exportXlsxUrl, exportPdfUrl } from '../api/client';
 import GanttChart from './GanttChart';
@@ -49,7 +49,16 @@ function statusLabel(region, status) {
   return status;
 }
 
+// Batch 4：各分頁對應的錯誤 scope（切換分頁時清除該分頁的殘留錯誤）
+const TAB_ERROR_SCOPES = {
+  schedule: ['mutation'],
+  resources: ['resources', 'leveling'],
+  risk: ['risk', 'simulation'],
+  progress: ['progress', 'evm'],
+};
+
 export default function ScheduleBoard() {
+  const store = useScheduleStore();
   const {
     tenantId,
     region,
@@ -57,8 +66,6 @@ export default function ScheduleBoard() {
     token,
     projects,
     currentProject,
-    loading,
-    error,
     leveling,
     baseline,
     progress,
@@ -74,7 +81,16 @@ export default function ScheduleBoard() {
     loadProgress,
     loadBaseline,
     updateTaskLinks,
-  } = useScheduleStore();
+    clearError,
+  } = store;
+
+  // Batch 4：scoped 載入/錯誤 — 全域頂部狀態列僅顯示 project/projects scope；
+  // 寫入動作（拖曳改工期/增刪任務/依賴編輯/建立專案）走 mutation scope，
+  // 以非阻塞提示顯示，不蓋住甘特圖。
+  const boardLoading = isLoading(store, 'project') || isLoading(store, 'projects');
+  const boardError = getError(store, 'project') || getError(store, 'projects');
+  const mutationBusy = isLoading(store, 'mutation');
+  const mutationError = getError(store, 'mutation');
 
   // 寫入權限：editor 以上可寫；viewer 僅讀（隱藏所有寫入動作）。
   // 角色缺失（舊權杖/標頭模式）視為 admin（與後端預設一致），維持向後相容。
@@ -192,7 +208,8 @@ export default function ScheduleBoard() {
     const raw = durationDrafts[taskId];
     const dur = Number.parseInt(raw, 10);
     if (Number.isNaN(dur) || dur < 0) return;
-    await changeTaskDuration(taskId, dur);
+    // 錯誤已存於 errors.mutation（樂觀更新失敗時 store 會還原快照）
+    await changeTaskDuration(taskId, dur).catch(() => {});
   };
 
   const handleRecalc = () => {
@@ -214,18 +231,22 @@ export default function ScheduleBoard() {
         .filter(Boolean),
       status: newTask.status || 'PENDING',
     };
-    await addTask(payload);
-    // 清空表單
-    setNewTask({ task_id: '', task_name: '', duration: 1, predecessors: '', status: 'PENDING' });
+    try {
+      await addTask(payload);
+      // 成功才清空表單（失敗保留輸入讓用戶修正；錯誤存於 errors.mutation）
+      setNewTask({ task_id: '', task_name: '', duration: 1, predecessors: '', status: 'PENDING' });
+    } catch (e) {
+      /* 錯誤已存於 errors.mutation */
+    }
   };
 
   const handleSyncErp = () => {
-    syncErp();
+    syncErp().catch(() => {});
   };
 
   // 建立專案：呼叫 store.createProject(payload)，成功後關閉模態
   // （store 會將新專案設為 currentProject 並刷新清單）。失敗時拋出讓
-  // ProjectForm 保持開啟，錯誤透過 store.error 顯示。
+  // ProjectForm 保持開啟，錯誤透過 errors.mutation 顯示。
   const handleCreateProject = async (payload) => {
     await createProject(payload);
     setShowProjectForm(false);
@@ -235,7 +256,13 @@ export default function ScheduleBoard() {
   const handleRemoveTask = async (taskId) => {
     // eslint-disable-next-line no-alert
     if (!window.confirm(t(region, 'confirmDeleteTask'))) return;
-    await removeTask(taskId);
+    await removeTask(taskId).catch(() => {});
+  };
+
+  // Batch 4：切換分頁時清除目標分頁的殘留錯誤（每個分頁只看自己的 scope）
+  const handleTabSwitch = (key) => {
+    (TAB_ERROR_SCOPES[key] || []).forEach((scope) => clearError(scope));
+    setActiveTab(key);
   };
 
   // ---- Batch 3：依賴編輯（dep_type FS/SS/FF/SF + lag）----
@@ -293,7 +320,7 @@ export default function ScheduleBoard() {
       }));
     const { taskId } = depEdit;
     setDepEdit(null);
-    await updateTaskLinks(taskId, links);
+    await updateTaskLinks(taskId, links).catch(() => {});
   };
 
   const handleDownloadReport = () => {
@@ -444,7 +471,11 @@ export default function ScheduleBoard() {
             <label style={{ fontSize: '12px', color: '#666' }}>&nbsp;</label>
             <button
               style={{ ...btnStyle, background: '#27ae60' }}
-              onClick={() => setShowProjectForm(true)}
+              onClick={() => {
+                // 開啟表單時清除殘留的 mutation 錯誤（表單只顯示自己造成的錯誤）
+                clearError('mutation');
+                setShowProjectForm(true);
+              }}
             >
               + {t(region, 'newProject')}
             </button>
@@ -459,8 +490,8 @@ export default function ScheduleBoard() {
           defaultRegion={region}
           onSubmit={handleCreateProject}
           onCancel={() => setShowProjectForm(false)}
-          serverError={error}
-          submitting={loading}
+          serverError={mutationError}
+          submitting={mutationBusy}
         />
       )}
 
@@ -549,11 +580,11 @@ export default function ScheduleBoard() {
         </div>
       )}
 
-      {/* ===== 狀態列 ===== */}
-      {loading && (
+      {/* ===== 狀態列（僅 project/projects scope；寫入動作另以 mutation scope 顯示） ===== */}
+      {boardLoading && (
         <div style={{ padding: '8px', color: '#2980b9' }}>{t(region, 'loading')}…</div>
       )}
-      {error && (
+      {boardError && (
         <div
           style={{
             padding: '8px 12px',
@@ -564,7 +595,7 @@ export default function ScheduleBoard() {
             marginBottom: '12px',
           }}
         >
-          {t(region, 'error')}: {String(error)}
+          {t(region, 'error')}: {String(boardError)}
         </div>
       )}
 
@@ -652,7 +683,7 @@ export default function ScheduleBoard() {
               return (
                 <button
                   key={tab.key}
-                  onClick={() => setActiveTab(tab.key)}
+                  onClick={() => handleTabSwitch(tab.key)}
                   style={{
                     ...btnStyle,
                     background: active ? '#2c3e50' : '#fff',
@@ -684,13 +715,25 @@ export default function ScheduleBoard() {
           {/* ===== 排程分頁（甘特圖 + 任務表格 + 新增任務） ===== */}
           {activeTab === 'schedule' && (
           <>
+          {/* Batch 4：mutation scope 狀態 — 非阻塞「重新計算中」提示 + 錯誤橫幅
+              （樂觀更新期間甘特圖維持可互動，不被全域 spinner 蓋住） */}
+          {mutationBusy && (
+            <div className="recalc-hint">{t(region, 'recalculating')}</div>
+          )}
+          {mutationError && (
+            <div className="notice error">
+              {t(region, 'error')}: {String(mutationError)}
+            </div>
+          )}
           {/* ===== 甘特圖 ===== */}
           <div style={{ marginBottom: '20px' }}>
             {tasks.length > 0 ? (
               <GanttChart
                 tasks={tasks}
                 region={region}
-                onTaskDurationChange={canWrite ? (id, d) => changeTaskDuration(id, d) : undefined}
+                onTaskDurationChange={
+                  canWrite ? (id, d) => changeTaskDuration(id, d).catch(() => {}) : undefined
+                }
                 overCapacityDays={overCapacityDays}
                 baseline={baseline}
                 progress={progressMap}
@@ -873,7 +916,7 @@ export default function ScheduleBoard() {
         </>
       )}
 
-      {!currentProject && !loading && (
+      {!currentProject && !boardLoading && (
         <div style={{ padding: '40px', textAlign: 'center', color: '#999' }}>
           {t(region, 'project')} — {t(region, 'projectName')}
         </div>

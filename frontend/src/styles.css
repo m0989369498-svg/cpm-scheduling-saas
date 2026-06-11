@@ -215,6 +215,18 @@ tr.critical-row td {
   color: var(--color-critical);
 }
 
+/* ---- Batch 4：非阻塞「重新計算中」提示（mutation scope；
+        樂觀更新拖曳改工期時顯示於甘特圖上方，不蓋住甘特圖） ---- */
+.recalc-hint {
+  display: inline-block;
+  padding: 3px 12px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: #eaf2fb;
+  color: var(--color-accent);
+  font-size: 12px;
+}
+
 /* ---- 甘特圖 Gantt ---- */
 .gantt {
   overflow-x: auto;

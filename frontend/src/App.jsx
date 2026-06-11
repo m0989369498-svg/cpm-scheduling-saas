@@ -6,14 +6,28 @@ import Login from './components/Login.jsx'
 import { useScheduleStore } from './store/scheduleStore'
 import { t } from './i18n'
 
+// Batch 4：頂層視圖對應的錯誤 scope（切換視圖時清除該視圖的殘留錯誤）
+const VIEW_ERROR_SCOPES = {
+  board: ['project', 'projects'],
+  dashboard: ['dashboard'],
+  users: ['users', 'trash'],
+}
+
 // 根元件：
 //   - 未持有權杖 (store.token) -> 顯示 Login 登入頁
-//   - 已登入 -> 頂部使用者列（帳號 / 租戶 / 角色 + 登出）+ 導覽分頁
+//   - 已登入 -> 頂部使用者列（帳號 / 租戶 / 角色 + 登出；username 由
+//     session restore 經 GET /auth/me 復原，重新整理後仍顯示）+ 導覽分頁
 //     （排程板 / 儀表板 / 使用者管理[僅 admin]）
 export default function App() {
-  const { token, username, tenantId, region, role, logout } = useScheduleStore()
+  const { token, username, tenantId, region, role, logout, clearError } = useScheduleStore()
   // 頂層視圖：'board'（排程板）| 'dashboard'（投資組合儀表板）| 'users'（使用者管理）
   const [view, setView] = useState('board')
+
+  // 切換頂層視圖：清除目標視圖 scope 的殘留錯誤後再切換
+  const handleViewSwitch = (key) => {
+    ;(VIEW_ERROR_SCOPES[key] || []).forEach((scope) => clearError(scope))
+    setView(key)
+  }
 
   if (!token) {
     return <Login />
@@ -61,7 +75,7 @@ export default function App() {
             key={item.key}
             type="button"
             className={`app-nav-tab${view === item.key ? ' active' : ''}`}
-            onClick={() => setView(item.key)}
+            onClick={() => handleViewSwitch(item.key)}
           >
             {item.label}
           </button>

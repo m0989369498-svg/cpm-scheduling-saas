@@ -164,6 +164,9 @@ async def evaluate_and_dispatch(
     event = SyncEvent(
         tenant_id=ctx.tenant_id,
         mapping_id=None,  # 風險預警事件無對應特定任務 mapping
+        # Batch 4 (PERF-3)：直接寫入專案代碼欄位 (除 payload 外)，
+        # 供 dashboard / exports 以索引查詢，免掃 payload JSON。
+        project_id=project_id,
         sync_type=RISK_PROVISION_SYNC_TYPE,
         payload=payload,
         status="PENDING",

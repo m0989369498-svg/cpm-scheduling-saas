@@ -533,6 +533,14 @@ class SyncEvent(Base):
     __tablename__ = "sync_event_log"
     __table_args__ = (
         Index("ix_sync_event_log_status_retry", "status", "retry_count"),
+        # Batch 4 (PERF-3)：dashboard / exports 風險事件統計的複合索引
+        # (WHERE tenant_id+sync_type+status，GROUP BY project_id)。
+        Index(
+            "ix_sync_event_log_tenant_type_status",
+            "tenant_id",
+            "sync_type",
+            "status",
+        ),
         {"schema": "erp_integration"},
     )
 
@@ -549,6 +557,10 @@ class SyncEvent(Base):
     mapping_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("erp_integration.task_mapping.mapping_id")
     )
+    # Batch 4 (PERF-3)：事件所屬專案。寫入端 (erp router / risk_listener) 直接
+    # 設定；舊列由遷移 0003 / main.py sqlite ALTER 自 payload 回填。可為 NULL
+    # (例：COST_PULL 為租戶層級事件，無單一專案)。
+    project_id: Mapped[str | None] = mapped_column(String(64))
     sync_type: Mapped[str] = mapped_column(String(50), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON_PORTABLE, nullable=False)
     status: Mapped[str] = mapped_column(

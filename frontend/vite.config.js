@@ -24,4 +24,11 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
   },
+  // QUAL-2 (Batch 4)：vitest 單元測試設定 — jsdom 環境 + 全域 API (describe/it/expect)
+  // setupFiles 載入 @testing-library/jest-dom matchers 與 localStorage 清理。
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: ['./src/test/setup.js'],
+  },
 })

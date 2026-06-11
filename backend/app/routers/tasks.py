@@ -31,9 +31,7 @@ from app.routers.projects import (
     _get_project_or_404,
     _load_tasks,
     _load_dependencies,
-    _build_task_definitions,
 )
-from app.core.cpm_engine import calculate_cpm
 
 logger = logging.getLogger("cpm.routers.tasks")
 
@@ -121,49 +119,47 @@ async def list_tasks(
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
 ) -> list[TaskResult]:
-    """列出專案任務（含 CPM 結果）。"""
-    await _get_project_or_404(db, project_id, ctx.tenant_id)
+    """列出專案任務（含「已持久化」的 CPM 結果欄位；PERF-4）。
+
+    recompute_project() 於所有寫入路徑都會持久化 es/ef/ls/lf/float_time/
+    is_critical，故此讀取端點直接以 Task 列組裝回應，「不」重跑 calculate_cpm。
+    僅當結果「看似未算過」（每個任務 es==0 且 ef==0、且存在 duration>0 者）
+    時重算一次後回應（兼容歷史資料 / 外部直寫）。
+    """
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     tasks = await _load_tasks(db, project_id)
     deps = await _load_dependencies(db, project_id)
+
+    needs_recompute = (
+        bool(tasks)
+        and all((t.es or 0) == 0 and (t.ef or 0) == 0 for t in tasks)
+        and any((t.duration or 0) > 0 for t in tasks)
+    )
+    if needs_recompute:
+        project_out = await recompute_project(db, project, notify=False)
+        return list(project_out.tasks)
 
     # FEAT-1：predecessors（向下相容）+ links（dep_type/lag_days）雙視圖。
     pred_map, links_map = _dependency_maps(deps)
 
-    # 嘗試以即時 CPM 結果回傳；資料異常則退回 DB 快取
-    definitions = _build_task_definitions(tasks, deps)
-    result_map = {}
-    if definitions:
-        try:
-            result_map = calculate_cpm(definitions)
-        except ValueError:
-            result_map = {}
-
     out: list[TaskResult] = []
     for t in tasks:
-        res = result_map.get(t.task_id)
-        if res is not None:
-            res.task_name = t.task_name or ""
-            res.predecessors = pred_map.get(t.task_id, [])
-            res.links = links_map.get(t.task_id, [])
-            res.status = t.status or "PENDING"
-            out.append(res)
-        else:
-            out.append(
-                TaskResult(
-                    task_id=t.task_id,
-                    task_name=t.task_name or "",
-                    duration=t.duration or 0,
-                    predecessors=pred_map.get(t.task_id, []),
-                    links=links_map.get(t.task_id, []),
-                    status=t.status or "PENDING",
-                    es=t.es or 0,
-                    ef=t.ef or 0,
-                    ls=t.ls or 0,
-                    lf=t.lf or 0,
-                    float_time=t.float_time or 0,
-                    is_critical=bool(t.is_critical),
-                )
+        out.append(
+            TaskResult(
+                task_id=t.task_id,
+                task_name=t.task_name or "",
+                duration=t.duration or 0,
+                predecessors=pred_map.get(t.task_id, []),
+                links=links_map.get(t.task_id, []),
+                status=t.status or "PENDING",
+                es=t.es or 0,
+                ef=t.ef or 0,
+                ls=t.ls or 0,
+                lf=t.lf or 0,
+                float_time=t.float_time or 0,
+                is_critical=bool(t.is_critical),
             )
+        )
     return out
 
 

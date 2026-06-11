@@ -639,6 +639,52 @@ async def _ensure_batch3_columns() -> None:
                         label, exc)
 
 
+async def _ensure_batch4_columns() -> None:
+    """冪等為「既有」sqlite dev DB 補上 Batch 4 (PERF-3) 新欄位 (live upgrade)。
+
+    Batch 4 新增：sync_event_log.project_id (事件所屬專案) + 複合索引
+    (tenant_id, sync_type, status)，並以 json_extract 自 payload 回填既有列。
+
+    對「全新」DB，create_all / init.sql 已含欄位與索引；但對「既有」cpm_dev.db，
+    create_all 不會修改既存表，故此處以 ALTER TABLE ADD COLUMN 補齊 —— 沿用
+    _ensure_batch3_columns 的已驗證模式：「每句各自 try/except + 各自交易」：
+
+      - 欄位已存在 (新庫 / 已升級) -> ALTER 失敗 (duplicate column) -> 略過。
+      - 表尚未建立 -> ALTER 失敗 -> 略過 (隨後/先前的 create_all 會建出完整新表)。
+      - 回填 / 索引建立皆冪等 (WHERE project_id IS NULL / IF NOT EXISTS)。
+
+    僅針對 sqlite (本機 dev) 執行：PostgreSQL 由 Alembic 0003 / db/init.sql 權威
+    管理。sqlite 下 erp_integration schema 映射為 None，表名即 sync_event_log。
+    """
+    if not is_sqlite():
+        return
+    from sqlalchemy import text
+
+    from app import database
+
+    statements = [
+        ("sync_event_log.project_id (add)",
+         "ALTER TABLE sync_event_log ADD COLUMN project_id VARCHAR(64)"),
+        # 回填：既有列自 payload JSON 取出 project_id (idempotent)。
+        ("sync_event_log.project_id (backfill)",
+         "UPDATE sync_event_log "
+         "SET project_id = json_extract(payload, '$.project_id') "
+         "WHERE project_id IS NULL"),
+        # 複合索引：dashboard / exports 風險事件統計查詢 (IF NOT EXISTS 冪等)。
+        ("sync_event_log index (tenant_id, sync_type, status)",
+         "CREATE INDEX IF NOT EXISTS ix_sync_event_log_tenant_type_status "
+         "ON sync_event_log(tenant_id, sync_type, status)"),
+    ]
+    for label, ddl in statements:
+        try:
+            async with database.get_engine().begin() as conn:
+                await conn.execute(text(ddl))
+            logger.info("Batch 4 ensure applied: %s (live sqlite upgrade).", label)
+        except Exception as exc:  # noqa: BLE001 - 欄位已存在 / 表未建 皆視為正常
+            logger.info("Batch 4 ensure skipped for %s (already present?): %s",
+                        label, exc)
+
+
 async def _bootstrap_database() -> None:
     """啟動時的資料庫初始化 (create_all + 種子)，全程 best-effort。
 
@@ -665,6 +711,13 @@ async def _bootstrap_database() -> None:
             await _ensure_batch3_columns()
         except Exception as exc:  # noqa: BLE001
             logger.info("Batch 3 column ensure skipped: %s", exc)
+
+        # Batch 4 (PERF-3)：為既有 sqlite dev DB 冪等補上 sync_event_log.project_id
+        # + 複合索引 + payload 回填 (新庫為 no-op)。
+        try:
+            await _ensure_batch4_columns()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Batch 4 column ensure skipped: %s", exc)
 
         try:
             await _seed_core_data()

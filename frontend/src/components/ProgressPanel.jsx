@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useScheduleStore } from '../store/scheduleStore';
+import { useScheduleStore, isLoading, getError } from '../store/scheduleStore';
 import { t } from '../i18n';
 import EvmChart from './EvmChart';
 
@@ -25,20 +25,24 @@ import EvmChart from './EvmChart';
 const PERF_THRESHOLD = 0.9;
 
 export default function ProgressPanel({ region = 'TW' }) {
+  const store = useScheduleStore();
   const {
     currentProject,
     progress,
     baseline,
     evm,
     dataDate,
-    loading,
     loadProgress,
     saveProgress,
     createBaseline,
     loadBaseline,
     runEvm,
     dispatchEvmAlert,
-  } = useScheduleStore();
+  } = store;
+
+  // Batch 4：本面板僅讀取 progress / evm scope 的載入與錯誤
+  const busy = isLoading(store, 'progress') || isLoading(store, 'evm');
+  const panelError = getError(store, 'progress') || getError(store, 'evm');
 
   // 本地草稿：{ [taskId]: {budget, percent_complete, actual_cost, actual_start_day, actual_finish_day} }
   const [drafts, setDrafts] = useState({});
@@ -137,34 +141,50 @@ export default function ProgressPanel({ region = 'TW' }) {
 
   const handleSave = async () => {
     setAlertMsg('');
-    await saveProgress(buildProgressList());
+    try {
+      await saveProgress(buildProgressList());
+    } catch (e) {
+      /* 錯誤已存於 errors.progress */
+    }
   };
 
   // 建立基準線：先儲存進度（確保預算落地），再建立基準線快照
   const handleCreateBaseline = async () => {
     setAlertMsg('');
-    await saveProgress(buildProgressList());
-    await createBaseline();
+    try {
+      await saveProgress(buildProgressList());
+      await createBaseline();
+    } catch (e) {
+      /* 錯誤已存於 errors.progress */
+    }
   };
 
   // 計算 EVM：先儲存進度，再以資料日計算
   const handleComputeEvm = async () => {
     setAlertMsg('');
-    await saveProgress(buildProgressList());
-    const dd = ddInput === '' ? null : Number.parseInt(ddInput, 10);
-    await runEvm(Number.isFinite(dd) ? dd : null);
+    try {
+      await saveProgress(buildProgressList());
+      const dd = ddInput === '' ? null : Number.parseInt(ddInput, 10);
+      await runEvm(Number.isFinite(dd) ? dd : null);
+    } catch (e) {
+      /* 錯誤已存於 errors.progress / errors.evm */
+    }
   };
 
   const handleDispatchAlert = async () => {
     setAlertMsg('');
-    const dd = ddInput === '' ? null : Number.parseInt(ddInput, 10);
-    const res = await dispatchEvmAlert(Number.isFinite(dd) ? dd : null);
-    if (res) {
-      setAlertMsg(
-        res.dispatched
-          ? `${t(region, 'dispatchAlert')} ✓ ${t(region, 'riskProvision')}`
-          : `${t(region, 'dispatchAlert')} — ${t(region, 'none')}`,
-      );
+    try {
+      const dd = ddInput === '' ? null : Number.parseInt(ddInput, 10);
+      const res = await dispatchEvmAlert(Number.isFinite(dd) ? dd : null);
+      if (res) {
+        setAlertMsg(
+          res.dispatched
+            ? `${t(region, 'dispatchAlert')} ✓ ${t(region, 'riskProvision')}`
+            : `${t(region, 'dispatchAlert')} — ${t(region, 'none')}`,
+        );
+      }
+    } catch (e) {
+      /* 錯誤已存於 errors.evm */
     }
   };
 
@@ -184,6 +204,14 @@ export default function ProgressPanel({ region = 'TW' }) {
         {t(region, 'progress')} · {t(region, 'evm')}
       </h3>
 
+      {/* ===== 面板自身 scope 的載入/錯誤 ===== */}
+      {busy && <div className="notice loading">{t(region, 'loading')}…</div>}
+      {panelError && (
+        <div className="notice error">
+          {t(region, 'error')}: {String(panelError)}
+        </div>
+      )}
+
       {/* ===== 基準線狀態列 ===== */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', marginBottom: '12px' }}>
         <span style={{ fontSize: '13px', color: '#555' }}>
@@ -196,7 +224,7 @@ export default function ProgressPanel({ region = 'TW' }) {
             <span style={{ color: '#bbb' }}>{t(region, 'none')}</span>
           )}
         </span>
-        <button onClick={handleCreateBaseline} disabled={loading} className="secondary">
+        <button onClick={handleCreateBaseline} disabled={busy} className="secondary">
           {t(region, 'createBaseline')}
         </button>
       </div>
@@ -310,12 +338,12 @@ export default function ProgressPanel({ region = 'TW' }) {
             </span>
           </div>
         </div>
-        <button onClick={handleSave} disabled={loading} className="secondary">
+        <button onClick={handleSave} disabled={busy} className="secondary">
           {t(region, 'save')}
         </button>
         <button
           onClick={handleComputeEvm}
-          disabled={loading}
+          disabled={busy}
           style={{ background: '#16a085', borderColor: '#16a085' }}
         >
           {t(region, 'computeEvm')}
@@ -390,7 +418,7 @@ export default function ProgressPanel({ region = 'TW' }) {
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
             <button
               onClick={handleDispatchAlert}
-              disabled={loading || !riskFlagged}
+              disabled={busy || !riskFlagged}
               className="danger"
               title={riskFlagged ? t(region, 'dispatchAlert') : t(region, 'none')}
             >

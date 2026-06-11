@@ -27,6 +27,10 @@
     schedule_task_id -> upsert public.task_progress.actual_cost (ERP 有提供
     percent_complete 時一併更新)；每租戶寫入一筆 sync_event_log
     (sync_type='COST_PULL'，SUCCESS payload={updated:N, tenant} 或 FAILED + last_error)。
+  4) 保留清理 (``sweep_event_logs_once``, Batch 4 PERF-3d)：
+    每 ``SWEEP_INTERVAL_HOURS`` (6) 小時清理 ``sync_event_log`` 與
+    ``notification_outbox`` 中 status='SUCCESS' 逾 30 天、status='DEAD'
+    逾 90 天 (created_at 基準) 的列；PENDING 永不清除。記錄各類刪除筆數。
 
 關鍵設計：
     - Worker 使用「自己的」async engine / AsyncSession (sqlite dev 模式下與
@@ -49,11 +53,12 @@ import json
 import logging
 import os
 import signal
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.automation import notifications
@@ -81,6 +86,15 @@ logger = logging.getLogger("app.erp.worker")
 BATCH_LIMIT = 100
 # 通知 outbox 每次 tick 投遞的批次上限
 OUTBOX_BATCH_LIMIT = 100
+
+# Batch 4 (PERF-3d)：事件 / 通知保留政策 (retention)。
+#   SUCCESS：30 天後清除 (僅供近期觀測 / 除錯)。
+#   DEAD   ：90 天後清除 (保留較久供稽核 / 事後分析)。
+#   PENDING：永不清除 (仍待處理)。
+RETENTION_SUCCESS_DAYS = 30
+RETENTION_DEAD_DAYS = 90
+# 保留清理 job 的執行間隔 (小時)。
+SWEEP_INTERVAL_HOURS = 6
 
 # 心跳檔 (CHANGE-6b)：每個 tick touch 一次，compose healthcheck 以 mtime 判斷存活。
 HEARTBEAT_FILE = Path(os.environ.get("WORKER_HEARTBEAT_FILE", "/tmp/worker_heartbeat"))
@@ -738,12 +752,75 @@ async def pull_actuals_once() -> dict[str, int]:
     return stats
 
 
+# --------------------------------------------------------------------------- #
+# 事件 / 通知保留清理 (Batch 4 — PERF-3d retention sweep)
+# --------------------------------------------------------------------------- #
+async def sweep_event_logs_once() -> dict[str, int]:
+    """執行單次保留清理 (冪等)，回傳各類刪除筆數統計。
+
+    清理對象 (created_at 為基準)：
+      - erp_integration.sync_event_log     ：SUCCESS 逾 30 天、DEAD 逾 90 天。
+      - erp_integration.notification_outbox：SUCCESS 逾 30 天、DEAD 逾 90 天。
+    PENDING 列永不清除 (仍待 worker 處理)。
+
+    供測試與手動執行使用；由排程器每 SWEEP_INTERVAL_HOURS 小時觸發一次。
+    回傳 keys：event_success / event_dead / outbox_success / outbox_dead。
+    """
+    _touch_heartbeat()  # 與其他 job 一致：每個 tick 更新心跳檔
+    now = datetime.now(timezone.utc)
+    success_cutoff = now - timedelta(days=RETENTION_SUCCESS_DAYS)
+    dead_cutoff = now - timedelta(days=RETENTION_DEAD_DAYS)
+
+    stats = {
+        "event_success": 0,
+        "event_dead": 0,
+        "outbox_success": 0,
+        "outbox_dead": 0,
+    }
+    async with WorkerSessionLocal() as session:
+        targets = (
+            (SyncEvent, "event"),
+            (NotificationOutbox, "outbox"),
+        )
+        for model, prefix in targets:
+            res_success = await session.execute(
+                delete(model).where(
+                    model.status == "SUCCESS",
+                    model.created_at < success_cutoff,
+                )
+            )
+            res_dead = await session.execute(
+                delete(model).where(
+                    model.status == "DEAD",
+                    model.created_at < dead_cutoff,
+                )
+            )
+            stats[f"{prefix}_success"] = int(res_success.rowcount or 0)
+            stats[f"{prefix}_dead"] = int(res_dead.rowcount or 0)
+        await session.commit()
+
+    logger.info(
+        "保留清理完成：sync_event_log SUCCESS=%d DEAD=%d；"
+        "notification_outbox SUCCESS=%d DEAD=%d "
+        "(SUCCESS>%dd / DEAD>%dd)",
+        stats["event_success"],
+        stats["event_dead"],
+        stats["outbox_success"],
+        stats["outbox_dead"],
+        RETENTION_SUCCESS_DAYS,
+        RETENTION_DEAD_DAYS,
+    )
+    return stats
+
+
 async def main() -> None:
     """啟動 APScheduler 排程器並常駐執行。
 
     以 ``settings.erp_scan_interval_seconds`` 為間隔週期性呼叫 ``scan_once``
     (ERP 拋轉)、``deliver_outbox_once`` (通知投遞) 與 ``pull_actuals_once``
-    (實際成本回拉, Batch 3)。支援 SIGINT / SIGTERM 優雅關閉。
+    (實際成本回拉, Batch 3)；另以每 ``SWEEP_INTERVAL_HOURS`` 小時一次的低頻
+    排程呼叫 ``sweep_event_logs_once`` (保留清理, Batch 4)。
+    支援 SIGINT / SIGTERM 優雅關閉。
     """
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
@@ -771,6 +848,16 @@ async def main() -> None:
         trigger="interval",
         seconds=settings.erp_scan_interval_seconds,
         id="erp_cost_pull",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=None,
+    )
+    # Batch 4 (PERF-3d)：事件 / 通知保留清理 job (低頻；每 6 小時一次)
+    scheduler.add_job(
+        sweep_event_logs_once,
+        trigger="interval",
+        hours=SWEEP_INTERVAL_HOURS,
+        id="event_log_retention_sweep",
         max_instances=1,
         coalesce=True,
         next_run_time=None,

@@ -1,16 +1,21 @@
-"""Redis 非同步快取層（async cache）。
+"""Redis 非同步連線輔助（async Redis helpers）。
 
-用途：快取每個專案的甘特 / CPM 計算結果，降低重複運算與 DB 負載。
+用途：提供惰性建立的全域 Redis client 與 ping / close 輔助函式
+(供啟動時 best-effort 連線檢查等使用)。
+
+Batch 4 (PERF-5)：移除從未被呼叫的甘特快取函式
+(get_project_gantt / set_project_gantt / invalidate_project_gantt 及其
+cache_get / cache_set / cache_delete 序列化輔助) —— 讀取路徑已改為直接
+服務 tasks 表中持久化的 CPM 結果欄位，無需另一層 Redis 快取。
 
 設計原則：
-    - 全部以 graceful degradation 處理：Redis 不可用時不應讓 API 失敗，
-      讀取回傳 None、寫入靜默忽略（best-effort），由呼叫端 fallback 重算。
+    - 全部以 graceful degradation 處理：Redis 不可用時不應讓呼叫端失敗，
+      建立失敗回傳 None、ping 失敗回傳 False。
     - 使用單一惰性建立（lazy）的全域連線池（connection pool）。
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -26,14 +31,6 @@ logger = logging.getLogger("cpm.cache")
 
 # 全域 client（惰性建立）
 _redis_client: Any | None = None
-
-# 預設 TTL（秒）：甘特快取 1 小時
-DEFAULT_TTL_SECONDS = 3600
-
-
-def _project_key(tenant_id: str, project_id: str) -> str:
-    """組出每租戶、每專案的甘特快取鍵（避免跨租戶汙染）。"""
-    return f"gantt:{tenant_id}:{project_id}"
 
 
 async def get_redis() -> Any | None:
@@ -70,74 +67,6 @@ async def ping() -> bool:
     except Exception as exc:
         logger.warning("Redis ping 失敗：%s", exc)
         return False
-
-
-async def cache_get(key: str) -> Any | None:
-    """讀取並反序列化（JSON）；失敗或不存在回傳 None。"""
-    client = await get_redis()
-    if client is None:
-        return None
-    try:
-        raw = await client.get(key)
-    except Exception as exc:
-        logger.warning("Redis GET 失敗 key=%s：%s", key, exc)
-        return None
-    if raw is None:
-        return None
-    try:
-        return json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-
-
-async def cache_set(key: str, value: Any, ttl: int = DEFAULT_TTL_SECONDS) -> bool:
-    """序列化（JSON）後寫入並設定 TTL；任何失敗回傳 False（不拋例外）。"""
-    client = await get_redis()
-    if client is None:
-        return False
-    try:
-        payload = json.dumps(value, ensure_ascii=False, default=str)
-        await client.set(key, payload, ex=ttl)
-        return True
-    except Exception as exc:
-        logger.warning("Redis SET 失敗 key=%s：%s", key, exc)
-        return False
-
-
-async def cache_delete(key: str) -> bool:
-    """刪除指定鍵；失敗回傳 False。"""
-    client = await get_redis()
-    if client is None:
-        return False
-    try:
-        await client.delete(key)
-        return True
-    except Exception as exc:
-        logger.warning("Redis DEL 失敗 key=%s：%s", key, exc)
-        return False
-
-
-# ---- 專案甘特快取的高階輔助函式 ----
-
-
-async def get_project_gantt(tenant_id: str, project_id: str) -> Any | None:
-    """讀取某專案的甘特 / CPM 快取結果。"""
-    return await cache_get(_project_key(tenant_id, project_id))
-
-
-async def set_project_gantt(
-    tenant_id: str,
-    project_id: str,
-    data: Any,
-    ttl: int = DEFAULT_TTL_SECONDS,
-) -> bool:
-    """寫入某專案的甘特 / CPM 快取結果。"""
-    return await cache_set(_project_key(tenant_id, project_id), data, ttl)
-
-
-async def invalidate_project_gantt(tenant_id: str, project_id: str) -> bool:
-    """使某專案的甘特快取失效（任務 / 工期變動後呼叫）。"""
-    return await cache_delete(_project_key(tenant_id, project_id))
 
 
 async def close_redis() -> None:

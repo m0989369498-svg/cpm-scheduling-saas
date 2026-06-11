@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { t } from '../i18n/index.js'
 
 // API 基底路徑：開發時可由 VITE_API_BASE_URL 覆寫；
 // 生產環境經 gateway 反向代理，預設 '/api/v1'。
@@ -55,6 +56,34 @@ apiClient.interceptors.request.use((config) => {
   }
   return config
 })
+
+// Batch 4：回應攔截器 — 任一端點（登入除外）回 401 視為權杖逾期/失效：
+// 統一登出（清除 token/狀態）並設定 errors.auth = sessionExpired，
+// Login 頁面會顯示該訊息。/auth/login 的 401 是帳密錯誤，交由登入流程自行處理。
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    try {
+      const status = error && error.response && error.response.status
+      const url = (error && error.config && error.config.url) || ''
+      if (status === 401 && !String(url).includes('/auth/login')) {
+        const store = globalThis.__cpmScheduleStore
+        if (store && typeof store.getState === 'function') {
+          const st = store.getState()
+          const region = st.region || 'TW'
+          if (typeof st.logout === 'function') st.logout()
+          // logout 會重置 errors，故在其後寫入 sessionExpired
+          store.setState((state) => ({
+            errors: { ...state.errors, auth: t(region, 'sessionExpired') },
+          }))
+        }
+      }
+    } catch (e) {
+      /* 攔截器內錯誤不得吞掉原始錯誤 */
+    }
+    return Promise.reject(error)
+  },
+)
 
 // ---- 匯出 API 函式（每個皆回傳 response.data） ----
 

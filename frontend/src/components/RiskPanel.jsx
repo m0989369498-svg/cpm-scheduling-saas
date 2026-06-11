@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useScheduleStore } from '../store/scheduleStore';
+import { useScheduleStore, isLoading, getError } from '../store/scheduleStore';
 import { t } from '../i18n';
 import SCurveChart from './SCurveChart';
 
@@ -24,15 +24,19 @@ const DEFAULT_ITERATIONS = 1000;
 const ON_TIME_THRESHOLD = 0.7; // 準時機率警示門檻（< 70% 高亮）
 
 export default function RiskPanel({ region = 'TW' }) {
+  const store = useScheduleStore();
   const {
     currentProject,
     risk,
     simulation,
-    loading,
     loadRisk,
     saveRisk,
     runSimulation,
-  } = useScheduleStore();
+  } = store;
+
+  // Batch 4：本面板僅讀取 risk / simulation scope 的載入與錯誤
+  const busy = isLoading(store, 'risk') || isLoading(store, 'simulation');
+  const panelError = getError(store, 'risk') || getError(store, 'simulation');
 
   // 本地草稿：{ [taskId]: {a, m, b} }
   const [drafts, setDrafts] = useState({});
@@ -111,18 +115,26 @@ export default function RiskPanel({ region = 'TW' }) {
       .filter(Boolean);
 
   const handleSave = async () => {
-    await saveRisk(buildRiskList());
+    try {
+      await saveRisk(buildRiskList());
+    } catch (e) {
+      /* 錯誤已存於 errors.risk */
+    }
   };
 
   const handleRunSimulation = async () => {
     // 先儲存三點估計，再執行模擬，確保引擎使用畫面上的設定
-    await saveRisk(buildRiskList());
-    const dl = Number.parseInt(deadline, 10);
-    const req = {
-      iterations: Math.max(1, Number.parseInt(iterations, 10) || DEFAULT_ITERATIONS),
-      deadline: Number.isFinite(dl) ? dl : null,
-    };
-    await runSimulation(req);
+    try {
+      await saveRisk(buildRiskList());
+      const dl = Number.parseInt(deadline, 10);
+      const req = {
+        iterations: Math.max(1, Number.parseInt(iterations, 10) || DEFAULT_ITERATIONS),
+        deadline: Number.isFinite(dl) ? dl : null,
+      };
+      await runSimulation(req);
+    } catch (e) {
+      /* 錯誤已存於 errors.risk / errors.simulation */
+    }
   };
 
   if (!currentProject) {
@@ -141,6 +153,14 @@ export default function RiskPanel({ region = 'TW' }) {
       <h3 style={{ marginTop: 0, color: '#2c3e50' }}>
         {t(region, 'riskAnalysis')} · {t(region, 'monteCarlo')}
       </h3>
+
+      {/* ===== 面板自身 scope 的載入/錯誤 ===== */}
+      {busy && <div className="notice loading">{t(region, 'loading')}…</div>}
+      {panelError && (
+        <div className="notice error">
+          {t(region, 'error')}: {String(panelError)}
+        </div>
+      )}
 
       {/* ===== 三點估計表 ===== */}
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', marginBottom: '12px' }}>
@@ -240,10 +260,10 @@ export default function RiskPanel({ region = 'TW' }) {
             onChange={(e) => setIterations(e.target.value)}
           />
         </div>
-        <button onClick={handleSave} disabled={loading} className="secondary">
+        <button onClick={handleSave} disabled={busy} className="secondary">
           {t(region, 'save')}
         </button>
-        <button onClick={handleRunSimulation} disabled={loading} style={{ background: '#8e44ad', borderColor: '#8e44ad' }}>
+        <button onClick={handleRunSimulation} disabled={busy} style={{ background: '#8e44ad', borderColor: '#8e44ad' }}>
           {t(region, 'runSimulation')}
         </button>
       </div>
