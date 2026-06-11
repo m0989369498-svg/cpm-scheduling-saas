@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import risk_listener
+from app.core import audit, risk_listener
 from app.core.resource_leveling import level_resources
 from app.deps import TenantContext, get_db, require_role, verify_tenant
 from app.models.orm import ProjectResourceLimit, Task
@@ -157,6 +157,26 @@ async def set_resources(
             tk.resource_demands = {str(k): int(v) for k, v in dict(demand).items()}
 
     await db.flush()
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "RESOURCES_UPDATE",
+            {
+                "project_id": project_id,
+                "limits": {
+                    lim.resource_type: int(lim.max_capacity)
+                    for lim in payload.limits
+                },
+                "demand_task_ids": sorted(payload.demands.keys())
+                if payload.demands
+                else [],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit RESOURCES_UPDATE failed (ignored): %s", exc)
 
     # 回傳更新後的完整設定
     limits = await _load_resource_limits(db, project_id)

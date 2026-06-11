@@ -36,6 +36,8 @@ _HTTP_TIMEOUT = 10.0
 
 # LINE Messaging API 廣播端點
 _LINE_BROADCAST_URL = "https://api.line.me/v2/bot/message/broadcast"
+# LINE Messaging API 指定對象推播端點 (per-tenant 設定 line_target_id 時使用)
+_LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
 
 # ---------------------------------------------------------------------------
@@ -163,26 +165,49 @@ def build_schedule_summary(project_out: Any, region: str = "TW") -> str:
 # ---------------------------------------------------------------------------
 # LINE (台灣)
 # ---------------------------------------------------------------------------
-async def notify_line(message: str) -> dict:
-    """透過 LINE Messaging API 廣播文字訊息。
+async def notify_line(
+    message: str,
+    *,
+    token: str | None = None,
+    target_id: str | None = None,
+) -> dict:
+    """透過 LINE Messaging API 推播文字訊息。
+
+    Batch 2 — 支援明確憑證參數 (per-tenant 通知設定)：
+      token     : 明確指定 channel access token；None => 退回全域
+                  settings.line_channel_access_token (舊行為)。
+      target_id : 指定推播對象 (userId / groupId) => 改走 push API；
+                  None / 空 => broadcast (舊行為)。
+    舊呼叫 notify_line(message) 之行為 / 回傳形狀完全不變。
 
     無 token 時為 no-op (僅 log)。回傳結果 dict:
       {"channel": "line", "sent": bool, "skipped"?: True, "status_code"?: int, "error"?: str}
     """
-    token = (settings.line_channel_access_token or "").strip()
-    if not token:
+    eff_token = (
+        token if token is not None else (settings.line_channel_access_token or "")
+    ).strip()
+    if not eff_token:
         logger.info("[LINE] 未設定 LINE_CHANNEL_ACCESS_TOKEN, 略過推播 (no-op): %s", message)
         return {"channel": "line", "sent": False, "skipped": True}
 
     headers = {
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"Bearer {eff_token}",
         "Content-Type": "application/json",
     }
-    payload = {"messages": [{"type": "text", "text": message[:4900]}]}
+    messages = [{"type": "text", "text": message[:4900]}]
+    target = (target_id or "").strip()
+    if target:
+        # 指定對象 => push API (per-tenant line_target_id)
+        url = _LINE_PUSH_URL
+        payload: dict = {"to": target, "messages": messages}
+    else:
+        # 未指定對象 => broadcast (與舊行為一致)
+        url = _LINE_BROADCAST_URL
+        payload = {"messages": messages}
 
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-            resp = await client.post(_LINE_BROADCAST_URL, headers=headers, json=payload)
+            resp = await client.post(url, headers=headers, json=payload)
         ok = resp.status_code == 200
         if ok:
             logger.info("[LINE] 推播成功 (status=%s)", resp.status_code)
@@ -197,14 +222,21 @@ async def notify_line(message: str) -> dict:
 # ---------------------------------------------------------------------------
 # 釘釘 DingTalk (中國大陸)
 # ---------------------------------------------------------------------------
-async def notify_dingtalk(message: str) -> dict:
+async def notify_dingtalk(message: str, *, webhook: str | None = None) -> dict:
     """透過釘釘群機器人 Webhook 推送文字訊息。
+
+    Batch 2 — 支援明確憑證參數 (per-tenant 通知設定)：
+      webhook : 明確指定 webhook URL；None => 退回全域
+                settings.dingtalk_webhook_url (舊行為)。
+    舊呼叫 notify_dingtalk(message) 之行為 / 回傳形狀完全不變。
 
     無 webhook 時為 no-op (僅 log)。回傳結果 dict:
       {"channel": "dingtalk", "sent": bool, "skipped"?: True, "status_code"?: int,
        "errcode"?: int, "error"?: str}
     """
-    webhook = (settings.dingtalk_webhook_url or "").strip()
+    webhook = (
+        webhook if webhook is not None else (settings.dingtalk_webhook_url or "")
+    ).strip()
     if not webhook:
         logger.info("[DingTalk] 未設定 DINGTALK_WEBHOOK_URL, 略過推播 (no-op): %s", message)
         return {"channel": "dingtalk", "sent": False, "skipped": True}
@@ -246,15 +278,23 @@ async def notify_dingtalk(message: str) -> dict:
 # ---------------------------------------------------------------------------
 # 企業微信 WeCom (中國大陸；選填，與釘釘並行)
 # ---------------------------------------------------------------------------
-async def notify_wecom(message: str) -> dict:
+async def notify_wecom(message: str, *, webhook: str | None = None) -> dict:
     """透過企業微信 (WeCom) 群機器人 Webhook 推送文字訊息。
 
-    Webhook 取自 settings.wecom_webhook_url (env WECOM_WEBHOOK_URL)。
+    Batch 2 — 支援明確憑證參數 (per-tenant 通知設定)：
+      webhook : 明確指定 webhook URL；None => 退回全域
+                settings.wecom_webhook_url (env WECOM_WEBHOOK_URL；舊行為)。
+    舊呼叫 notify_wecom(message) 之行為 / 回傳形狀完全不變。
+
     無 webhook 時為 no-op (僅 log)。回傳結果 dict:
       {"channel": "wecom", "sent": bool, "skipped"?: True, "status_code"?: int,
        "errcode"?: int, "error"?: str}
     """
-    webhook = (getattr(settings, "wecom_webhook_url", "") or "").strip()
+    webhook = (
+        webhook
+        if webhook is not None
+        else (getattr(settings, "wecom_webhook_url", "") or "")
+    ).strip()
     if not webhook:
         logger.info("[WeCom] 未設定 WECOM_WEBHOOK_URL, 略過推播 (no-op): %s", message)
         return {"channel": "wecom", "sent": False, "skipped": True}

@@ -19,9 +19,10 @@
 fastapi
 uvicorn
 
-# --- 資料庫 (async SQLAlchemy + sqlite driver) ---
+# --- 資料庫 (async SQLAlchemy + sqlite driver + schema 遷移) ---
 sqlalchemy[asyncio]>=2
 aiosqlite
+alembic
 
 # --- 設定 / 驗證 ---
 pydantic>=2

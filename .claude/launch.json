@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "urban-node-game",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["-y", "serve", "-l", "5180", "C:\\steam\\遊戲2"],
+      "port": 5180
+    }
+  ]
+}

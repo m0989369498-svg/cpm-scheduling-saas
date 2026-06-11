@@ -33,6 +33,7 @@ from app.schemas.schedule import (
     TaskResult,
 )
 from app.core.cpm_engine import calculate_cpm, project_duration, critical_path
+from app.core import audit
 from app.automation import reports
 
 logger = logging.getLogger("cpm.routers.projects")
@@ -305,7 +306,25 @@ async def create_project(
             )
     await db.flush()
 
-    return await recompute_project(db, project)
+    project_out = await recompute_project(db, project)
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "PROJECT_CREATE",
+            {
+                "project_id": project_id,
+                "project_name": payload.project_name,
+                "region": project.region,
+                "task_count": len(payload.schedule_data),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit PROJECT_CREATE failed (ignored): %s", exc)
+
+    return project_out
 
 
 @router.get("/{project_id}", response_model=ProjectOut)
@@ -350,9 +369,28 @@ async def update_project(
 ) -> ProjectOut:
     """更新專案中繼資料（名稱 / 區域）。"""
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
+    before = {"project_name": project.project_name, "region": project.region}
     project.project_name = payload.project_name
     project.region = payload.region or project.region
     await db.flush()
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "PROJECT_UPDATE",
+            {
+                "project_id": project_id,
+                "before": before,
+                "after": {
+                    "project_name": project.project_name,
+                    "region": project.region,
+                },
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit PROJECT_UPDATE failed (ignored): %s", exc)
 
     # 不需重算 CPM，但回傳完整 ProjectOut（含既有結果）
     return await get_project(project_id, ctx=ctx, db=db)
@@ -367,12 +405,25 @@ async def delete_project(
 ) -> dict:
     """刪除專案（任務經 ON DELETE CASCADE 連帶刪除；相依手動清理）。"""
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
+    project_name = project.project_name
 
     await db.execute(
         sa_delete(TaskDependency).where(TaskDependency.project_id == project_id)
     )
     await db.delete(project)
     await db.flush()
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "PROJECT_DELETE",
+            {"project_id": project_id, "project_name": project_name},
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit PROJECT_DELETE failed (ignored): %s", exc)
+
     return {"ok": True}
 
 

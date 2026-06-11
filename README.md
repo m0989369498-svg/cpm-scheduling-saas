@@ -91,17 +91,28 @@ Then open:
 | URL | What |
 |-----|------|
 | <http://localhost:8080>            | App via the **gateway** (frontend + `/api` to backend) |
-| <http://localhost:8000/docs>       | Backend **OpenAPI / Swagger** docs |
-| <http://localhost:8000/health>     | Backend health probe |
+| <http://localhost:8080/docs>       | Backend **OpenAPI / Swagger** docs (via gateway) |
+| <http://localhost:8080/health>     | Backend health probe (via gateway) |
 
 A demo tenant **`TENT-9981`** (region `TW`) and demo project **`PRJ-2026-TW-001`** (tasks
 `T-01..T-03`) are seeded by `db/init.sql`, matching `contracts/sample_payload.json`.
 
 The frontend defaults its tenant to `TENT-9981` / region `TW`, so the board is populated on first load.
 
-> **Backend `:8000` is now published by compose** (not just `expose`d), so the Swagger UI at
-> <http://localhost:8000/docs> is reachable directly from the host while the gateway still
-> serves the app on `:8080`.
+> **The gateway (`:8080`) is the only published port.** Backend `:8000` is no longer mapped
+> to the host (it is only `expose`d on the internal network); Swagger UI and `/openapi.json`
+> are proxied through the gateway at <http://localhost:8080/docs>.
+
+### TLS / 上線 (production)
+
+- Compose 對外只發布 **gateway `:8080`**；backend / postgres / redis 皆僅在內部網路互通。
+- 生產環境**必須終結 TLS**：在 `gateway/nginx.conf` 取消註解 443 ssl server 模板並掛載憑證
+  (`./gateway/certs:/etc/nginx/certs:ro`)，或交由外部終結器 (雲端 LB / Cloudflare Tunnel
+  `cloudflared` / Caddy)。確認全站 HTTPS 後再開啟模板內註解的 **HSTS** 標頭。
+- Gateway 已全站送出安全標頭：`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、
+  `Referrer-Policy: no-referrer`。
+- DB 密碼經由 `.env` 內插 (`POSTGRES_PASSWORD` / `CPM_APP_PASSWORD`)，生產務必改為高強度
+  隨機值；輪替既有環境前先 `ALTER ROLE ... WITH PASSWORD`（詳見 `.env.example`）。
 
 ---
 
@@ -162,6 +173,9 @@ Vite dev server 於 <http://localhost:5173>。預設租戶 `TENT-9981` / `TW`，
 | `admin@cn` | `TENT-CN-002` | `CN`   |
 
 **取得 token** — `POST {API_V1_PREFIX}/auth/login`：
+
+> 下列範例以本機直跑 backend (`:8000`, §4a/§5) 為例；若走 docker compose，
+> backend 不再對外發布 `:8000`，請將 URL 換成 gateway 的 `http://localhost:8080`。
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/auth/login \
@@ -288,7 +302,7 @@ Base prefix: `{API_V1_PREFIX}` (default `/api/v1`).
 | `DELETE` | `/projects/{project_id}/tasks/{task_id}` | — | `ProjectOut` | Delete task + its deps, recalc. |
 | `POST` | `/projects/{project_id}/erp/sync` | `ErpSyncRequest` | `{enqueued: N, event_ids: [...]}` | Enqueue `PENDING` rows (creates mappings on the fly if missing). |
 | `GET` | `/projects/{project_id}/report` | — | `application/pdf` | Streaming PDF schedule report. |
-| `GET` | `/health` | — | `{status: "ok"}` | **Unprefixed** health probe. |
+| `GET` | `/health` | — | `{status, db, redis}` | **Unprefixed** health probe. Real check: DB `SELECT 1` (failure → 503) + Redis ping (optional → `"down"`, still 200). |
 
 **Canonical payload contract** — `contracts/schema.json` (JSON Schema draft-07) and
 `contracts/sample_payload.json` describe the standardized project payload

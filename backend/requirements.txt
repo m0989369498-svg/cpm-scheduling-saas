@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 sqlalchemy[asyncio]>=2
 asyncpg
+alembic
 pydantic>=2
 pydantic-settings
 redis>=5

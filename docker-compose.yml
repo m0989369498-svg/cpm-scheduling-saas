@@ -14,7 +14,8 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: cpm
-      POSTGRES_PASSWORD: cpm_password
+      # 生產務必於 .env 覆寫 POSTGRES_PASSWORD (此為本機開發回退值)
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cpm_password}
       POSTGRES_DB: cpm_saas
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -55,7 +56,8 @@ services:
     container_name: cpm_backend
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://cpm_app:cpm_app_password@postgres:5432/cpm_saas
+      # cpm_app 密碼生產務必於 .env 覆寫 CPM_APP_PASSWORD (並先 ALTER ROLE 同步, 見 .env.example)
+      DATABASE_URL: postgresql+asyncpg://cpm_app:${CPM_APP_PASSWORD:-cpm_app_password}@postgres:5432/cpm_saas
       REDIS_URL: redis://redis:6379/0
       APP_ENV: development
       API_V1_PREFIX: /api/v1
@@ -78,9 +80,8 @@ services:
       DINGTALK_WEBHOOK_URL: ""
       ERP_SCAN_INTERVAL_SECONDS: "300"
       ERP_MAX_RETRIES: "5"
-    # 對外開放 8000 供 Swagger / OpenAPI 文件 (http://localhost:8000/docs)
-    ports:
-      - "8000:8000"
+    # 僅 expose 於內部網路 — gateway (:8080) 是唯一對外入口；
+    # Swagger / OpenAPI 改經 gateway 存取: http://localhost:8080/docs
     expose:
       - "8000"
     depends_on:
@@ -88,7 +89,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # /health 會檢查 DB (SELECT 1) 與 redis ping; db 失敗回 503 -> unhealthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    command: sh -c "python -m app.migrate && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     networks:
       - cpm_net
 
@@ -103,7 +111,8 @@ services:
     container_name: cpm_worker
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://cpm_app:cpm_app_password@postgres:5432/cpm_saas
+      # cpm_app 密碼生產務必於 .env 覆寫 CPM_APP_PASSWORD (與 backend 一致)
+      DATABASE_URL: postgresql+asyncpg://cpm_app:${CPM_APP_PASSWORD:-cpm_app_password}@postgres:5432/cpm_saas
       REDIS_URL: redis://redis:6379/0
       APP_ENV: development
       API_V1_PREFIX: /api/v1
@@ -129,7 +138,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: python -m app.erp.worker
+    # worker 每個掃描 tick 會 touch /tmp/worker_heartbeat (見 app/erp/worker.py)；
+    # 心跳檔存在且 mtime 距今 < ERP_SCAN_INTERVAL_SECONDS*2+120 秒 => healthy。
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; p='/tmp/worker_heartbeat'; max_age=int(os.environ.get('ERP_SCAN_INTERVAL_SECONDS','300'))*2+120; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < max_age else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    command: sh -c "python -m app.migrate && python -m app.erp.worker"
     networks:
       - cpm_net
 

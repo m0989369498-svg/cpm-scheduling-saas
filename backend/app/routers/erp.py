@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import audit
 from app.deps import verify_tenant, get_db, TenantContext, require_role
 from app.models.orm import Task, TaskMapping, SyncEvent
 from app.schemas.schedule import ErpSyncRequest
@@ -113,5 +114,20 @@ async def sync_erp(
         payload.sync_type,
         len(event_ids),
     )
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "ERP_SYNC_ENQUEUE",
+            {
+                "project_id": project_id,
+                "sync_type": payload.sync_type or "SCHEDULE_PUSH",
+                "enqueued": len(event_ids),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit ERP_SYNC_ENQUEUE failed (ignored): %s", exc)
 
     return {"enqueued": len(event_ids), "event_ids": event_ids}

@@ -29,9 +29,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import risk_listener
+from app.core import audit, risk_listener
 from app.core.cpm_engine import calculate_cpm, project_duration
 from app.core.evm import compute_evm
+from app.core.i18n import t
 from app.deps import TenantContext, get_db, require_role, verify_tenant
 from app.models.orm import ProjectBaseline, TaskProgress
 from app.routers.projects import (
@@ -45,6 +46,12 @@ from app.schemas.evm import BaselineOut, EvmResult, ProgressEntry
 logger = logging.getLogger("cpm.routers.progress")
 
 router = APIRouter(prefix="/projects", tags=["progress"])
+
+# 基準線建立通知標題 (雙語; 與 i18n 風格一致 —— TW 繁體 / CN 簡體)
+_BASELINE_CREATED_TITLE = {
+    "TW": "基準線已建立",
+    "CN": "基准线已建立",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +200,20 @@ async def set_progress(
 
     await db.flush()
 
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "PROGRESS_UPDATE",
+            {
+                "project_id": project_id,
+                "task_ids": [e.task_id for e in payload],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit PROGRESS_UPDATE failed (ignored): %s", exc)
+
     rows = await _load_progress(db, project_id)
     return [_progress_to_schema(r) for r in rows]
 
@@ -216,9 +237,10 @@ async def create_baseline(
       3) budget 取自 task_progress (per task_id; 預設 0)。
       4) 組成 snapshot {"project_duration", "tasks":[{task_id,es,ef,duration,budget}]}
          並寫入 project_baselines (允許多條, 最新者為作用中)。
+      5) 入列基準線建立通知 (notification_outbox; 與本交易原子提交, worker 投遞)。
     回傳新建立的 BaselineOut。
     """
-    await _get_project_or_404(db, project_id, ctx.tenant_id)
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
 
     name = "baseline"
     if isinstance(payload, dict):
@@ -272,6 +294,40 @@ async def create_baseline(
     await db.flush()
     # 取回 server_default (created_at) 等欄位, 確保回應完整。
     await db.refresh(baseline)
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "BASELINE_CREATE",
+            {
+                "project_id": project_id,
+                "baseline_id": int(baseline.id),
+                "name": name,
+                "project_duration": int(duration),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit BASELINE_CREATE failed (ignored): %s", exc)
+
+    # 基準線建立通知 (best-effort): 入列 notification_outbox (與本交易原子提交),
+    # 由 worker.deliver_outbox_once 實際投遞。入列失敗僅記錄, 絕不中斷主要操作。
+    try:
+        region = (ctx.region or "TW").upper()
+        title = _BASELINE_CREATED_TITLE.get(region, _BASELINE_CREATED_TITLE["TW"])
+        message = (
+            f"📌 {title}: {name}\n"
+            f"{t(region, 'project')}: {project.project_name} ({project_id})\n"
+            f"{t(region, 'projectDuration')}: {int(duration)} {t(region, 'days')}"
+        )
+        await risk_listener.enqueue_notification(db, ctx.tenant_id, region, message)
+    except Exception as exc:  # noqa: BLE001 - 通知入列失敗不可中斷主要操作
+        logger.warning(
+            "baseline notification enqueue failed (ignored) project=%s: %s",
+            project_id,
+            exc,
+        )
 
     return _baseline_to_schema(baseline)
 
@@ -398,6 +454,24 @@ async def dispatch_evm_alert(
         reason="SCHEDULE_COST_OVERRUN",
         detail=detail,
     )
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    event_id = dispatch.get("event_id")
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "EVM_ALERT_DISPATCH",
+            {
+                "project_id": project.project_id,
+                "data_date": int(data_date),
+                "spi": evm.spi,
+                "cpi": evm.cpi,
+                "event_id": str(event_id) if event_id is not None else None,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit EVM_ALERT_DISPATCH failed (ignored): %s", exc)
 
     return {
         "dispatched": True,

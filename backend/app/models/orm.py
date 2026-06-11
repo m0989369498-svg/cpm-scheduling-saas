@@ -2,7 +2,8 @@
 
 兩個 schema：
   public (預設)               : tenants, projects, tasks, task_dependencies (受 RLS 保護)
-  erp_integration (服務管理)  : tenant_erp_config, task_mapping, sync_event_log (無 RLS)
+  erp_integration (服務管理)  : tenant_erp_config, task_mapping, sync_event_log,
+                                tenant_notification_config, notification_outbox (無 RLS)
 
 erp_integration 模型以 __table_args__ = {"schema": "erp_integration"} 指定 schema。
 """
@@ -409,6 +410,60 @@ class TaskMapping(Base):
     tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
     schedule_task_id: Mapped[str] = mapped_column(String(100), nullable=False)
     erp_wbs_code: Mapped[str] = mapped_column(String(100), nullable=False)
+
+
+class NotificationConfig(Base):
+    """租戶通知憑證 (erp_integration.tenant_notification_config)。
+
+    每租戶自有的 LINE token / 釘釘 / 企業微信 webhook；欄位留空 => 投遞時
+    退回全域 settings。與 tenant_erp_config 同理：服務管理資料、無 RLS，
+    由程式碼以 tenant_id 過濾 (跨租戶 worker 需可掃描)。
+    """
+
+    __tablename__ = "tenant_notification_config"
+    __table_args__ = {"schema": "erp_integration"}
+
+    tenant_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    line_token: Mapped[str | None] = mapped_column(String(255))
+    line_target_id: Mapped[str | None] = mapped_column(String(100))
+    dingtalk_webhook: Mapped[str | None] = mapped_column(String(255))
+    wecom_webhook: Mapped[str | None] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+
+
+class NotificationOutbox(Base):
+    """通知 outbox (erp_integration.notification_outbox)。
+
+    交易性 outbox：API 於業務交易內寫入 PENDING 列 (與業務資料同交易、原子提交)，
+    worker (deliver_outbox_once) 週期掃描並實際投遞。
+    狀態：PENDING -> SUCCESS / DEAD (retry_count >= 上限)。
+    channel：LINE / DINGTALK / WECOM / LOG (LOG 僅記錄日誌 => SUCCESS)。
+    """
+
+    __tablename__ = "notification_outbox"
+    __table_args__ = (
+        Index("ix_notification_outbox_status_retry", "status", "retry_count"),
+        {"schema": "erp_integration"},
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    region: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'TW'")
+    )
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'PENDING'")
+    )
+    retry_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP_TZ, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP_TZ, server_default=func.now()
+    )
 
 
 class SyncEvent(Base):

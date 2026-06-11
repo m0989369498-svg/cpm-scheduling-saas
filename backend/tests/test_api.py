@@ -36,10 +36,19 @@ def client():
 
 
 def test_health_ok(client):
-    """/health 應回傳 status ok。"""
+    """/health 應回傳 {status, db, redis} 形狀 (Batch 2 CHANGE-6a 真實健檢)。
+
+    本模組為「無狀態」測試 (不重綁 DB)：開發機上 DATABASE_URL 可能指向不存在的
+    postgres -> db:"down" + 503；CI / compose (DB 就緒) -> db:"ok" + 200。
+    故此處驗證「回應形狀 + 狀態碼與 db 健康一致」的契約，而不強制 DB 必須存在；
+    「DB 健康時 200 + db:ok」由 test_prod_readiness.py 在 sqlite 下驗證。
+    """
     resp = client.get("/health")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    assert resp.status_code in (200, 503)
+    body = resp.json()
+    assert set(body.keys()) >= {"status", "db", "redis"}
+    # 契約：db 健康 <=> 200；db 失敗 <=> 503 (redis 為選配，不影響狀態碼)。
+    assert (resp.status_code == 200) == (body["db"] == "ok")
 
 
 def test_calculate_returns_results_for_all_tasks(client):

@@ -7,10 +7,13 @@ recompute_project() 重算整個專案 CPM 並回傳新的 ProjectOut。
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import audit
 from app.deps import verify_tenant, get_db, TenantContext, require_role
 from app.models.orm import Task, TaskDependency
 from app.schemas.schedule import (
@@ -28,6 +31,8 @@ from app.routers.projects import (
     _build_task_definitions,
 )
 from app.core.cpm_engine import calculate_cpm
+
+logger = logging.getLogger("cpm.routers.tasks")
 
 router = APIRouter(prefix="/projects", tags=["tasks"])
 
@@ -178,7 +183,25 @@ async def add_task(
             db, project_id, ctx.tenant_id, payload.task_id, payload.predecessors
         )
 
-    return await recompute_project(db, project)
+    project_out = await recompute_project(db, project)
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "TASK_CREATE",
+            {
+                "project_id": project_id,
+                "task_id": payload.task_id,
+                "duration": payload.duration,
+                "predecessors": list(payload.predecessors or []),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit TASK_CREATE failed (ignored): %s", exc)
+
+    return project_out
 
 
 @router.put("/{project_id}/tasks/{task_id}", response_model=ProjectOut)
@@ -194,20 +217,38 @@ async def update_task(
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     task = await _get_task_or_404(db, project_id, task_id)
 
+    changed: dict[str, object] = {}
     if payload.task_name is not None:
         task.task_name = payload.task_name
+        changed["task_name"] = payload.task_name
     if payload.duration is not None:
         task.duration = payload.duration
+        changed["duration"] = payload.duration
     if payload.status is not None:
         task.status = payload.status
+        changed["status"] = payload.status
     await db.flush()
 
     if payload.predecessors is not None:
         await _replace_predecessors(
             db, project_id, ctx.tenant_id, task_id, payload.predecessors
         )
+        changed["predecessors"] = list(payload.predecessors)
 
-    return await recompute_project(db, project)
+    project_out = await recompute_project(db, project)
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "TASK_UPDATE",
+            {"project_id": project_id, "task_id": task_id, "changed": changed},
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit TASK_UPDATE failed (ignored): %s", exc)
+
+    return project_out
 
 
 @router.put("/{project_id}/tasks/{task_id}/duration", response_model=ProjectOut)
@@ -223,10 +264,29 @@ async def update_task_duration(
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     task = await _get_task_or_404(db, project_id, task_id)
 
+    old_duration = task.duration
     task.duration = payload.duration
     await db.flush()
 
-    return await recompute_project(db, project)
+    project_out = await recompute_project(db, project)
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "TASK_DURATION_UPDATE",
+            {
+                "project_id": project_id,
+                "task_id": task_id,
+                "before": old_duration,
+                "after": payload.duration,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit TASK_DURATION_UPDATE failed (ignored): %s", exc)
+
+    return project_out
 
 
 @router.delete("/{project_id}/tasks/{task_id}", response_model=ProjectOut)
@@ -252,4 +312,17 @@ async def delete_task(
     await db.delete(task)
     await db.flush()
 
-    return await recompute_project(db, project)
+    project_out = await recompute_project(db, project)
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "TASK_DELETE",
+            {"project_id": project_id, "task_id": task_id},
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit TASK_DELETE failed (ignored): %s", exc)
+
+    return project_out

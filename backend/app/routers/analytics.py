@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import risk_listener
+from app.core import audit, risk_listener
 from app.core.monte_carlo import simulate_schedule
 from app.deps import TenantContext, get_db, require_role, verify_tenant
 from app.models.orm import Task, TaskRiskParameter
@@ -129,6 +129,20 @@ async def set_risk(
             )
 
     await db.flush()
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "RISK_PARAMS_UPDATE",
+            {
+                "project_id": project_id,
+                "task_ids": [rp.task_id for rp in payload],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit RISK_PARAMS_UPDATE failed (ignored): %s", exc)
 
     rows = await _load_risk_params(db, project_id)
     return [_risk_param_to_schema(r) for r in rows]

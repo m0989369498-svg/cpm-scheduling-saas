@@ -64,6 +64,16 @@ def _build_engine():
         echo=False,
         pool_pre_ping=True,
         future=True,
+        # --- 連線池設定 (production readiness；見 config.py DB_* 環境變數) ---
+        # pool_size / max_overflow：常駐連線數與尖峰可暫借的額外連線數。
+        # pool_recycle：超過秒數的連線於下次借用前重建，避免被 LB / firewall
+        # 靜默斷線後才發現失效。
+        # command_timeout：asyncpg 連線層的單一指令逾時 (秒)，防止慢查詢
+        # 長期佔住池內連線。
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_recycle=settings.db_pool_recycle,
+        connect_args={"command_timeout": settings.db_command_timeout},
     )
 
 

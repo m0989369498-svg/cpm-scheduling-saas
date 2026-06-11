@@ -8,17 +8,22 @@
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.security import decode_token
 from app import database
 from app.database import set_tenant_guc
+from app.models.orm import AppUser
+
+logger = logging.getLogger("cpm.deps")
 
 
 # 角色階層 (role hierarchy)：admin > editor > viewer。
@@ -33,8 +38,9 @@ class TenantContext:
     tenant_id：租戶識別碼 (對應 RLS app.current_tenant)。
     region：地區 (TW=台灣 / CN=中國大陸)，影響 i18n、通知通道、ERP adapter 預設。
     sub：登入主體 (JWT sub，通常為 username)；header 模式下為空字串。
-    role：角色 (admin / editor / viewer)。Bearer 模式取自 token claim
-          (舊 token 無此 claim 時預設 admin)；header/dev 模式固定 admin。
+    role：角色 (admin / editor / viewer)。Bearer 模式以「DB 即時複查」的
+          app_users.role 為準 (比 token claim 新鮮)；DB 不可用且 claim 缺漏時
+          降為 viewer (最低權限)。header/dev 模式固定 admin。
     """
 
     tenant_id: str
@@ -53,6 +59,10 @@ async def verify_tenant(
     解析順序：
       1) 若 Authorization 為 "Bearer <token>" (不分大小寫)：解碼 JWT；無效/過期
          回 401。租戶/地區皆取自 token claims (X-Tenant-Id 標頭被忽略)。
+         另對 app_users 做「DB 即時複查」(JWT lifecycle)：帳號不存在或已停用
+         (is_active=False) -> 401，使停用立即生效，不必等 token 過期；role 以
+         DB 列為準。DB 意外失敗時：auth_required=True -> fail closed (401)；
+         否則回退 claims (dev 韌性)，role claim 缺漏時降為 viewer。
       2) 否則 (無 bearer)：
          - settings.auth_required=True  => 401 (必須登入)。
          - settings.auth_required=False (dev/header 模式)：
@@ -78,12 +88,50 @@ async def verify_tenant(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         region = (claims.get("region") or settings.default_region).strip().upper()
-        # 舊版 token 無 "role" claim -> 預設 admin (維持既有 token 持有者之完整權限)。
-        role = str(claims.get("role") or "admin")
+        sub = str(claims.get("sub") or "")
+
+        # --- DB 即時複查 (JWT lifecycle) ------------------------------------
+        # token 簽發後帳號可能已被停用 / 刪除或變更角色；token 本身仍簽章有效，
+        # 故每次請求以 UNIQUE 索引 (username) 快查 app_users 一次 (成本極低，
+        # 不做快取)，以 DB 列為權威：
+        #   - 帳號不存在或 is_active=False -> 401 (停用立即生效)。
+        #   - role 以 DB 列為準 (比 token claim 新鮮；改 role 不需重新登入)。
+        # app_users 無 RLS，毋須設定租戶 GUC 即可查詢 (與登入端點同理)。
+        try:
+            async with database.get_sessionmaker()() as session:
+                user = (
+                    await session.execute(
+                        select(AppUser).where(AppUser.username == sub)
+                    )
+                ).scalar_one_or_none()
+        except Exception:
+            # 預期外的 DB 錯誤 (連線中斷 / 池耗盡 ...)：
+            #   auth_required=True (production) -> fail CLOSED：無法確認帳號
+            #     狀態時一律拒絕，避免停用帳號趁 DB 故障窗口續用。
+            #   auth_required=False (dev) -> 回退 token claims (開發韌性)；
+            #     role claim 缺漏時降為最低權限 viewer (絕不預設 admin)。
+            logger.exception("verify_tenant：app_users 複查失敗 (sub=%s)", sub)
+            if settings.auth_required:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="無法驗證帳號狀態",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            role = str(claims.get("role") or "viewer")
+        else:
+            if user is None or not user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="帳號已停用或不存在",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            # DB role 為權威；理論上 NOT NULL，仍保守回退 claim -> viewer。
+            role = str(user.role or claims.get("role") or "viewer")
+
         return TenantContext(
             tenant_id=str(tenant_id),
             region=region,
-            sub=str(claims.get("sub") or ""),
+            sub=sub,
             role=role,
         )
 

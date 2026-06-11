@@ -78,6 +78,23 @@ jobs:
         run: |
           psql -h localhost -U cpm -d cpm_saas -v ON_ERROR_STOP=1 -f db/init.sql
 
+      - name: Alembic baseline (python -m app.migrate)
+        working-directory: backend
+        env:
+          # 遷移以「具 DDL 權限」的 DB owner (cpm) 執行：cpm_app 為刻意無 DDL
+          # 權限的應用角色 (PG15 起 public schema 預設不開放 CREATE)，無法建立
+          # alembic_version 表。stamp 由 cpm 落地後，cpm_app 透過 init.sql 的
+          # ALTER DEFAULT PRIVILEGES 取得該表的 SELECT/UPDATE 權限。
+          DATABASE_URL: postgresql+asyncpg://cpm:cpm_password@localhost:5432/cpm_saas
+        run: |
+          # init.sql 已建好全部資料表 -> migrate 偵測到既有 schema 且無
+          # alembic_version，執行 alembic stamp head (不跑任何 DDL)
+          python -m app.migrate
+          # 再以應用角色 cpm_app 跑一次 -> 已在 head，upgrade 為冪等 no-op，
+          # 同時驗證容器啟動路徑 (command 內的 python -m app.migrate) 可用
+          DATABASE_URL=postgresql+asyncpg://cpm_app:cpm_app_password@localhost:5432/cpm_saas \
+            python -m app.migrate
+
       - name: Run unit + integration tests
         working-directory: backend
         env:

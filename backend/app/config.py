@@ -74,6 +74,15 @@ class Settings(BaseSettings):
     erp_scan_interval_seconds: int = 300
     erp_max_retries: int = 5
 
+    # --- DB 連線池 (PostgreSQL/asyncpg 分支；sqlite 不適用) -----------------
+    # 由 database._build_engine 讀取。command_timeout (秒) 由 asyncpg 於連線層
+    # 強制，避免單一慢查詢長期佔住池內連線；pool_recycle 避免連線被中間設備
+    # (LB / firewall) 靜默回收後才發現失效。
+    db_pool_size: int = 10           # env DB_POOL_SIZE
+    db_max_overflow: int = 20       # env DB_MAX_OVERFLOW
+    db_pool_recycle: int = 1800     # env DB_POOL_RECYCLE (秒)
+    db_command_timeout: int = 30    # env DB_COMMAND_TIMEOUT (秒)
+
     # --- ERP 真實端點憑證 (選填；留空 => Adapter 缺端點時走模擬模式) ---------
     # 各家 ERP 的 API 金鑰 / Token 由環境變數注入，絕不寫死於程式碼。
     # SAP (PS 模組)：OData / REST 介面以 Bearer Token 認證
@@ -97,16 +106,28 @@ class Settings(BaseSettings):
         return v
 
     @model_validator(mode="after")
-    def _warn_weak_jwt_secret(self):
-        """正式環境若使用弱 / 預設 JWT 密鑰則記錄警告 (不中斷啟動)。"""
+    def _check_jwt_secret_strength(self):
+        """JWT 密鑰強度檢查 (fail fast in production)。
+
+        - production / prod：弱 / 預設密鑰 -> 直接 raise ValueError，拒絕啟動。
+          寧可啟動失敗，也不可帶著可被偽造簽章的密鑰對外服務。
+        - 其他環境 (development / test ...)：僅記錄警告，不中斷本機開發。
+        """
         weak_defaults = {
             "dev-secret-change-me",
             "change-me-in-prod",
             "dev-only-insecure-secret-DO-NOT-USE-IN-PROD-change-me",
         }
-        if self.app_env.lower() in {"production", "prod"} and (
+        is_weak = (
             len(self.jwt_secret.encode()) < 32 or self.jwt_secret in weak_defaults
-        ):
+        )
+        if is_weak:
+            if self.app_env.lower() in {"production", "prod"}:
+                raise ValueError(
+                    "JWT_SECRET 過弱或為預設值 (app_env="
+                    f"{self.app_env})；正式環境必須設定 >=32 bytes 的高強度隨機值，"
+                    '例如：python -c "import secrets; print(secrets.token_hex(32))"'
+                )
             logger.warning(
                 "JWT_SECRET 偏弱 (app_env=%s)；正式環境請改用 >=32 bytes 的高強度隨機值，"
                 '例如：python -c "import secrets; print(secrets.token_hex(32))"',

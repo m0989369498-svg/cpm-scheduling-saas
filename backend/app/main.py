@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import is_sqlite, settings
 from app.routers import (
@@ -702,6 +703,11 @@ from app.routers.progress import router as progress_router  # noqa: E402
 
 app.include_router(progress_router, prefix=_prefix)
 
+# Batch 2 (CHANGE-5) — 稽核日誌查詢 (audit_view, admin-only)。
+from app.routers.audit_view import router as audit_view_router  # noqa: E402
+
+app.include_router(audit_view_router, prefix=_prefix)
+
 # Phase 10 — 儀表板 (dashboard) / 使用者管理 (users) / 匯出 (exports) 路由器。
 # 以 best-effort 匯入並掛載：這些模組由 Phase 10 的其他工作項建立；若於某中間
 # 狀態尚未就緒則記錄並略過 (不中斷啟動)，待模組落地後即自動掛載。最後新增故置於
@@ -722,6 +728,76 @@ for _mod_path, _label in (
 
 
 @app.get("/health", tags=["meta"])
-async def health() -> dict:
-    """健康檢查端點（不需 tenant 標頭）。"""
-    return {"status": "ok"}
+async def health() -> JSONResponse:
+    """健康檢查端點（不需 tenant 標頭 / 認證；Batch 2 CHANGE-6a「真實」健檢）。
+
+    回應形狀 {status, db, redis}：
+      - db    : 經 get_sessionmaker() 執行 SELECT 1（短逾時）。DB 為必要依賴，
+                失敗 -> 503（compose healthcheck / LB 據此判定不健康）。
+      - redis : ping（優先重用 lifespan 建立的 app.state.redis；無則短暫新建
+                連線測試）。Redis 為「選配」依賴：失敗僅回報 "down"，仍回 200。
+      - status: db ok 且 redis ok -> "ok"；僅 redis down -> "degraded"（仍 200）；
+                db down -> "error"（503）。
+
+    刻意保持輕量（無認證、無租戶情境、短逾時），供 LB / docker healthcheck 高頻輪詢。
+    """
+    import asyncio
+
+    from sqlalchemy import text
+
+    from app import database
+
+    # --- DB：SELECT 1（必要依賴；失敗 -> 503）--------------------------------
+    db_status = "ok"
+
+    async def _db_ping() -> None:
+        async with database.get_sessionmaker()() as session:
+            await session.execute(text("SELECT 1"))
+
+    try:
+        await asyncio.wait_for(_db_ping(), timeout=3.0)
+    except Exception as exc:  # noqa: BLE001 - 逾時 / 連線失敗皆視為 down
+        logger.warning("/health DB check failed: %s", exc)
+        db_status = "down"
+
+    # --- Redis：ping（選配依賴；失敗 -> "down" 但仍 200）----------------------
+    redis_status = "ok"
+    try:
+        redis_client = getattr(app.state, "redis", None)
+        owns_client = False
+        if redis_client is None:
+            # lifespan 啟動時未連上 (或尚未啟動)：短暫新建連線測試，用完即關。
+            import redis.asyncio as aioredis
+
+            redis_client = aioredis.from_url(
+                settings.redis_url,
+                encoding="utf-8",
+                decode_responses=True,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+            )
+            owns_client = True
+        try:
+            await asyncio.wait_for(redis_client.ping(), timeout=2.0)
+        finally:
+            if owns_client:
+                try:
+                    await redis_client.aclose()
+                except Exception:  # noqa: BLE001 - 關閉失敗不影響健檢結果
+                    pass
+    except Exception as exc:  # noqa: BLE001 - Redis 非必要依賴，失敗僅標記 down
+        logger.info("/health Redis check failed (optional dependency): %s", exc)
+        redis_status = "down"
+
+    if db_status != "ok":
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "db": db_status, "redis": redis_status},
+        )
+    return JSONResponse(
+        content={
+            "status": "ok" if redis_status == "ok" else "degraded",
+            "db": db_status,
+            "redis": redis_status,
+        }
+    )

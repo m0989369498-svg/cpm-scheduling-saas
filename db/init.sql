@@ -563,6 +563,48 @@ WHERE NOT EXISTS (
 );
 
 -- =============================================================================
+-- 4.11 Batch 2 — 通知設定 / 通知 outbox (erp_integration schema，「無」RLS)
+-- -----------------------------------------------------------------------------
+-- 決策：與 tenant_erp_config 相同 —— 服務管理資料，由跨租戶 worker 掃描投遞，
+--       故置於 erp_integration 且「不」啟用 RLS，由程式碼以 tenant_id 過濾。
+--       本區塊置於 GRANT 區塊之前，方能被「GRANT ON ALL TABLES」一併涵蓋。
+-- =============================================================================
+
+-- 4.11.1 租戶通知憑證 (tenant_notification_config) ------------------------------
+--   每租戶自有的 LINE token / 釘釘 / 企業微信 webhook；
+--   欄位留空 => 投遞時退回全域 settings (LINE_CHANNEL_ACCESS_TOKEN 等)。
+CREATE TABLE IF NOT EXISTS erp_integration.tenant_notification_config (
+    tenant_id         VARCHAR(50)  PRIMARY KEY,            -- 對應 public.tenants.tenant_id
+    line_token        VARCHAR(255),                        -- LINE channel access token (TW)
+    line_target_id    VARCHAR(100),                        -- LINE push 對象 (userId/groupId)；空 => broadcast
+    dingtalk_webhook  VARCHAR(255),                        -- 釘釘群機器人 webhook (CN)
+    wecom_webhook     VARCHAR(255),                        -- 企業微信群機器人 webhook (CN，選配)
+    is_active         BOOLEAN      DEFAULT TRUE
+);
+
+-- 4.11.2 通知 outbox (notification_outbox) --------------------------------------
+--   交易性 outbox：API 於業務交易內寫入 PENDING 列 (與業務資料同交易、原子提交)，
+--   worker (app.erp.worker.deliver_outbox_once) 週期掃描並實際投遞。
+--   狀態：PENDING -> SUCCESS / DEAD (retry_count >= 上限)。channel='LOG' 僅記錄日誌
+--   (無任何通道憑證時的可觀測退路)。
+CREATE TABLE IF NOT EXISTS erp_integration.notification_outbox (
+    id           BIGSERIAL    PRIMARY KEY,
+    tenant_id    VARCHAR(50)  NOT NULL,
+    region       VARCHAR(20)  NOT NULL DEFAULT 'TW',       -- 區域 (TW / CN) => 通道路由
+    channel      VARCHAR(20)  NOT NULL,                    -- LINE / DINGTALK / WECOM / LOG
+    message      TEXT         NOT NULL,                    -- 訊息本文 (入列時已組裝完成)
+    status       VARCHAR(20)  NOT NULL DEFAULT 'PENDING',  -- PENDING/SUCCESS/DEAD
+    retry_count  INT          DEFAULT 0,
+    last_error   TEXT,                                     -- 最後一次失敗訊息
+    created_at   TIMESTAMPTZ  DEFAULT now(),
+    updated_at   TIMESTAMPTZ  DEFAULT now()
+);
+
+-- worker 掃描用索引：WHERE status='PENDING' AND retry_count < max
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_status
+    ON erp_integration.notification_outbox(status, retry_count);
+
+-- =============================================================================
 -- 5. 應用程式連線角色 cpm_app (NON-SUPERUSER) — RLS 真正生效的關鍵
 -- -----------------------------------------------------------------------------
 -- 安全性重點 (root cause)：
