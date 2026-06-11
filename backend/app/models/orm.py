@@ -1,7 +1,8 @@
 """SQLAlchemy 2.0 declarative ORM 模型 —— 逐欄對應 db/init.sql。
 
 兩個 schema：
-  public (預設)               : tenants, projects, tasks, task_dependencies (受 RLS 保護)
+  public (預設)               : tenants, projects, tasks, task_dependencies,
+                                project_holidays 等 (受 RLS 保護)
   erp_integration (服務管理)  : tenant_erp_config, task_mapping, sync_event_log,
                                 tenant_notification_config, notification_outbox (無 RLS)
 
@@ -10,13 +11,14 @@ erp_integration 模型以 __table_args__ = {"schema": "erp_integration"} 指定 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -92,6 +94,22 @@ class Project(Base):
     region: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'TW'")
     )
+    # --- Batch 3 FEAT-2：真實日期 + 工作日曆 (real dates + working calendar) ---
+    # start_date：開工日期 (NULL = 未設定，僅以相對天數呈現)。
+    # work_days ：7 字元字串，週一..週日，'1'=工作日 (營造預設含週六 '1111110')。
+    start_date: Mapped[date | None] = mapped_column(Date)
+    work_days: Mapped[str] = mapped_column(
+        String(7), nullable=False, server_default=text("'1111110'")
+    )
+    # --- Batch 3 FEAT-3：樂觀併發控制 (optimistic concurrency) ---
+    # 每次排程重算 (recompute) / 專案更新時 +1；客戶端帶 expected_version 比對。
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    # --- Batch 3 FEAT-4：軟刪除 / 回收桶 (soft delete / recycle bin) ---
+    # deleted_at 非 NULL = 已進回收桶；所有讀取路徑須過濾 deleted_at IS NULL。
+    deleted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP_TZ)
+    deleted_by: Mapped[str | None] = mapped_column(String(150))
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP_TZ, server_default=func.now()
     )
@@ -157,7 +175,11 @@ class Task(Base):
 
 
 class TaskDependency(Base):
-    """任務相依 (task_dependencies)。task_id 依賴 predecessor_task_id 完成後始可開始。"""
+    """任務相依 (task_dependencies)。task_id 與 predecessor_task_id 之約束關係。
+
+    Batch 3 FEAT-1：新增依賴型態 dep_type (FS/SS/FF/SF) 與 lag_days (延遲天數，
+    可為負 = 提前 lead)。預設 FS + 0 => 舊版「完成-開始」語義完全向後相容。
+    """
 
     __tablename__ = "task_dependencies"
     __table_args__ = (
@@ -174,6 +196,41 @@ class TaskDependency(Base):
     tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
     task_id: Mapped[str] = mapped_column(String(100), nullable=False)
     predecessor_task_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    # 依賴型態：FS (完成-開始) / SS (開始-開始) / FF (完成-完成) / SF (開始-完成)。
+    dep_type: Mapped[str] = mapped_column(
+        String(2), nullable=False, server_default=text("'FS'")
+    )
+    # 延遲天數 (lag)；負值表示提前 (lead)。
+    lag_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+
+
+class ProjectHoliday(Base):
+    """專案假日 (project_holidays)。Batch 3 FEAT-2。
+
+    每專案的例外停工日 (國定假日 / 颱風假等)；搭配 projects.work_days 工作日曆
+    將 CPM 的「工作日 offset」換算為真實日期 (app/core/workcal.py)。
+    受 RLS 保護 (與 tasks / projects 一致)，故置於 public schema。
+    (project_id, holiday_date) 唯一 —— PUT /projects/{pid}/holidays 以替換式 upsert。
+    """
+
+    __tablename__ = "project_holidays"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "holiday_date", name="uq_project_holidays_project_date"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    holiday_date: Mapped[date] = mapped_column(Date, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(120), server_default=text("''"))
 
 
 class ProjectResourceLimit(Base):

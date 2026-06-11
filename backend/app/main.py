@@ -579,6 +579,66 @@ async def _ensure_app_users_role_column() -> None:
         logger.info("app_users.role ALTER skipped (already present?): %s", exc)
 
 
+async def _ensure_batch3_columns() -> None:
+    """冪等為「既有」sqlite dev DB 補上 Batch 3 新欄位 (live upgrade，免重建)。
+
+    Batch 3 新增：
+      projects.start_date / work_days (FEAT-2 真實日期 + 工作日曆)、
+      projects.version (FEAT-3 樂觀併發)、
+      projects.deleted_at / deleted_by (FEAT-4 軟刪除 / 回收桶)、
+      task_dependencies.dep_type / lag_days (FEAT-1 依賴型態 + 延遲)。
+
+    對「全新」DB，create_all / init.sql 已含這些欄位；但對「既有」cpm_dev.db，
+    create_all 不會修改既存表 (僅補建新表 project_holidays)，故此處逐欄以
+    ALTER TABLE ADD COLUMN 補齊 —— 沿用 _ensure_app_users_role_column 的
+    已驗證模式：「每欄各自 try/except + 各自交易」：
+
+      - 欄位已存在 (新庫 / 已升級) -> 該欄 ALTER 失敗 (duplicate column) -> 略過。
+      - 表尚未建立 -> ALTER 失敗 -> 略過 (隨後/先前的 create_all 會建出完整新表)。
+
+    僅針對 sqlite (本機 dev) 執行：PostgreSQL 由 Alembic 0002 / db/init.sql 權威
+    管理。如此既有的 cpm_dev.db 可「無需重建」升級，已輪替的密碼亦得保留。
+    """
+    if not is_sqlite():
+        return
+    from sqlalchemy import text
+
+    from app import database
+
+    # (標籤, DDL) —— 預設值與 init.sql / ORM server_default 一致。
+    statements = [
+        # FEAT-2 真實日期 + 工作日曆
+        ("projects.start_date",
+         "ALTER TABLE projects ADD COLUMN start_date DATE"),
+        ("projects.work_days",
+         "ALTER TABLE projects ADD COLUMN work_days VARCHAR(7) "
+         "NOT NULL DEFAULT '1111110'"),
+        # FEAT-3 樂觀併發控制
+        ("projects.version",
+         "ALTER TABLE projects ADD COLUMN version INTEGER NOT NULL DEFAULT 0"),
+        # FEAT-4 軟刪除 / 回收桶
+        ("projects.deleted_at",
+         "ALTER TABLE projects ADD COLUMN deleted_at TIMESTAMP"),
+        ("projects.deleted_by",
+         "ALTER TABLE projects ADD COLUMN deleted_by VARCHAR(150)"),
+        # FEAT-1 依賴型態 + 延遲
+        ("task_dependencies.dep_type",
+         "ALTER TABLE task_dependencies ADD COLUMN dep_type VARCHAR(2) "
+         "NOT NULL DEFAULT 'FS'"),
+        ("task_dependencies.lag_days",
+         "ALTER TABLE task_dependencies ADD COLUMN lag_days INTEGER "
+         "NOT NULL DEFAULT 0"),
+    ]
+    for label, ddl in statements:
+        try:
+            async with database.get_engine().begin() as conn:
+                await conn.execute(text(ddl))
+            logger.info("Batch 3 column added: %s (live sqlite upgrade).", label)
+        except Exception as exc:  # noqa: BLE001 - 欄位已存在 / 表未建 皆視為正常
+            logger.info("Batch 3 ALTER skipped for %s (already present?): %s",
+                        label, exc)
+
+
 async def _bootstrap_database() -> None:
     """啟動時的資料庫初始化 (create_all + 種子)，全程 best-effort。
 
@@ -597,6 +657,15 @@ async def _bootstrap_database() -> None:
             logger.info("Database tables created (create_all).")
         except Exception as exc:  # noqa: BLE001 - 不可中斷啟動
             logger.warning("create_all failed (continuing): %s", exc)
+
+        # Batch 3：為既有 sqlite dev DB 冪等補上新欄位 (新庫為 no-op)。
+        # 須在 _seed_core_data「之前」執行 —— ORM 的 SELECT 已含新欄位
+        # (projects.start_date 等)，未升級的既有庫會使種子查詢失敗。
+        try:
+            await _ensure_batch3_columns()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Batch 3 column ensure skipped: %s", exc)
+
         try:
             await _seed_core_data()
             logger.info("Core demo data seeded.")

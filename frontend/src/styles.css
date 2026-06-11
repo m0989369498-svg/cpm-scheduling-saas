@@ -83,6 +83,7 @@ body {
 
 select,
 input[type='text'],
+input[type='date'],
 input[type='number'] {
   padding: 6px 8px;
   border: 1px solid var(--color-border);
@@ -681,4 +682,51 @@ tr.critical-row td {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 14px;
+}
+
+/* ---- Batch 3：甘特圖依賴箭頭 SVG 覆蓋層 ---- */
+.gantt-dep-arrows {
+  pointer-events: none;
+}
+
+/* ---- Batch 3：依賴編輯彈窗（dep_type + lag） ---- */
+.dep-popover {
+  max-width: 480px;
+}
+
+.dep-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--color-muted);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 4px;
+}
+
+.dep-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed #f0f2f4;
+}
+
+.dep-popover-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  cursor: pointer;
+  font-size: 13px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dep-popover-row select {
+  width: 70px;
+  font-size: 12px;
+  padding: 4px 6px;
 }

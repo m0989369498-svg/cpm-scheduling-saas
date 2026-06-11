@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import * as api from '../api/client.js'
+import { t } from '../i18n/index.js'
 
 // localStorage 鍵（與 api/client.js 攔截器共用）
 const LS_TENANT_KEY = 'cpm.tenantId'
@@ -81,6 +82,9 @@ export const useScheduleStore = create((set, get) => ({
   evm: null,
   dataDate: null,
 
+  // ---- Batch 3：回收桶（軟刪除專案清單，僅 admin 載入）----
+  trash: [],
+
   // 登入：以帳號/密碼換取 JWT。成功後設定 token + 由權杖回傳的 tenantId/region + username，
   // 並將 token 持久化至 localStorage（攔截器與重新整理後復原皆使用）。
   // 同時持久化 tenantId/region，使標頭回退與 token 一致。
@@ -135,6 +139,8 @@ export const useScheduleStore = create((set, get) => ({
       // 重置 Phase 10 儀表板/使用者狀態
       dashboard: null,
       users: [],
+      // 重置 Batch 3 回收桶
+      trash: [],
     })
   },
 
@@ -159,6 +165,8 @@ export const useScheduleStore = create((set, get) => ({
       // 切換租戶：清空 Phase 10 儀表板/使用者狀態（避免跨租戶殘留）
       dashboard: null,
       users: [],
+      // 切換租戶：清空 Batch 3 回收桶（避免跨租戶殘留）
+      trash: [],
     })
   },
 
@@ -235,44 +243,142 @@ export const useScheduleStore = create((set, get) => ({
   },
 
   // 拖曳/輸入改工期 -> 後端整案重算 CPM -> 以回傳 ProjectOut 更新當前專案
+  // Batch 3：附帶 expected_version（樂觀鎖）；409 版本衝突時重載專案並提示。
   changeTaskDuration: async (taskId, duration) => {
     const cur = get().currentProject
     if (!cur) return null
     set({ loading: true, error: null })
     try {
-      const project = await api.updateTaskDuration(cur.project_id, taskId, Number(duration))
+      const project = await api.updateTaskDuration(
+        cur.project_id,
+        taskId,
+        Number(duration),
+        cur.version != null ? cur.version : undefined,
+      )
       set({ currentProject: project, loading: false })
       return project
     } catch (err) {
+      if (isVersionConflict(err)) {
+        await reloadAfterConflict(get, set)
+        return null
+      }
       set({ error: extractError(err), loading: false })
       throw err
     }
   },
 
-  // 新增任務 -> 後端重算 -> 更新當前專案
+  // 新增任務 -> 後端重算 -> 更新當前專案（附帶 expected_version；409 重載+提示）
   addTask: async (task) => {
     const cur = get().currentProject
     if (!cur) return null
     set({ loading: true, error: null })
     try {
-      const project = await api.addTask(cur.project_id, task)
+      const body = cur.version != null ? { ...task, expected_version: cur.version } : task
+      const project = await api.addTask(cur.project_id, body)
       set({ currentProject: project, loading: false })
       return project
+    } catch (err) {
+      if (isVersionConflict(err)) {
+        await reloadAfterConflict(get, set)
+        return null
+      }
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 刪除任務 -> 後端重算 -> 更新當前專案（附帶 expected_version；409 重載+提示）
+  removeTask: async (taskId) => {
+    const cur = get().currentProject
+    if (!cur) return null
+    set({ loading: true, error: null })
+    try {
+      const project = await api.deleteTask(
+        cur.project_id,
+        taskId,
+        cur.version != null ? cur.version : undefined,
+      )
+      set({ currentProject: project, loading: false })
+      return project
+    } catch (err) {
+      if (isVersionConflict(err)) {
+        await reloadAfterConflict(get, set)
+        return null
+      }
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // ---- Batch 3：依賴編輯（dep_type + lag）----
+
+  // 更新某任務的前置依賴連結（links: [{predecessor_task_id, dep_type, lag_days}]）。
+  // 以 api.updateTask 送出 PATCH 形狀 {links, expected_version}（後端重算 CPM）。
+  // 409 版本衝突：重載專案 + 設定 conflictReloaded 錯誤訊息（提示已重載）。
+  updateTaskLinks: async (taskId, links) => {
+    const cur = get().currentProject
+    if (!cur) return null
+    set({ loading: true, error: null })
+    try {
+      const patch = { links }
+      if (cur.version != null) patch.expected_version = cur.version
+      const project = await api.updateTask(cur.project_id, taskId, patch)
+      set({ currentProject: project, loading: false })
+      return project
+    } catch (err) {
+      if (isVersionConflict(err)) {
+        await reloadAfterConflict(get, set)
+        return null
+      }
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // ---- Batch 3：回收桶（軟刪除/還原/永久刪除，僅 admin）----
+
+  // 載入回收桶清單（軟刪除的專案摘要）；存入 store.trash
+  loadTrash: async () => {
+    set({ loading: true, error: null })
+    try {
+      const trash = await api.getTrash()
+      set({ trash: Array.isArray(trash) ? trash : [], loading: false })
+      return trash
     } catch (err) {
       set({ error: extractError(err), loading: false })
       throw err
     }
   },
 
-  // 刪除任務 -> 後端重算 -> 更新當前專案
-  removeTask: async (taskId) => {
-    const cur = get().currentProject
-    if (!cur) return null
+  // 還原軟刪除專案；成功後刷新回收桶與專案清單
+  restoreProject: async (id) => {
     set({ loading: true, error: null })
     try {
-      const project = await api.deleteTask(cur.project_id, taskId)
-      set({ currentProject: project, loading: false })
-      return project
+      const result = await api.restoreProject(id)
+      set({ loading: false })
+      get()
+        .loadTrash()
+        .catch(() => {})
+      get()
+        .loadProjects()
+        .catch(() => {})
+      return result
+    } catch (err) {
+      set({ error: extractError(err), loading: false })
+      throw err
+    }
+  },
+
+  // 永久刪除（硬刪除 cascade）；成功後刷新回收桶
+  purgeProject: async (id) => {
+    set({ loading: true, error: null })
+    try {
+      const result = await api.purgeProject(id)
+      set({ loading: false })
+      get()
+        .loadTrash()
+        .catch(() => {})
+      return result
     } catch (err) {
       set({ error: extractError(err), loading: false })
       throw err
@@ -573,6 +679,25 @@ export const useScheduleStore = create((set, get) => ({
 // 避免 store 與 client 模組相互循環匯入。
 if (typeof globalThis !== 'undefined') {
   globalThis.__cpmScheduleStore = useScheduleStore
+}
+
+// Batch 3：判斷是否為樂觀鎖版本衝突（HTTP 409）
+function isVersionConflict(err) {
+  return Boolean(err && err.response && err.response.status === 409)
+}
+
+// Batch 3：版本衝突後處理 — 重載當前專案（取得最新版本），
+// 並設定 conflictReloaded 錯誤訊息提示使用者「已重新載入」。
+async function reloadAfterConflict(get, set) {
+  const cur = get().currentProject
+  if (cur && cur.project_id) {
+    try {
+      await get().loadProject(cur.project_id)
+    } catch (e) {
+      /* 重載失敗：保留 loadProject 設定的錯誤之外，仍以衝突訊息覆蓋 */
+    }
+  }
+  set({ error: t(get().region, 'conflictReloaded'), loading: false })
 }
 
 // 從 axios 錯誤萃取可讀訊息

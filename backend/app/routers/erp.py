@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
@@ -21,6 +22,18 @@ from app.deps import verify_tenant, get_db, TenantContext, require_role
 from app.models.orm import Task, TaskMapping, SyncEvent
 from app.schemas.schedule import ErpSyncRequest
 from app.routers.projects import _get_project_or_404, _load_tasks
+
+# Batch 3 (FEAT-2)：真實日期 / 工作曆 —— workcal 與 ProjectHoliday 由同批次的
+# schema 工作項提供；以防呆方式匯入，於尚未落地的中間狀態維持既有行為
+# (payload 之 start_date / finish_date 保持 None)，落地後即自動啟用。
+try:  # pragma: no cover - 純粹的可用性偵測
+    from app.core.workcal import offset_to_date as _offset_to_date
+except ImportError:  # workcal 尚未落地
+    _offset_to_date = None
+try:  # pragma: no cover
+    from app.models.orm import ProjectHoliday as _ProjectHoliday
+except ImportError:  # project_holidays 尚未落地
+    _ProjectHoliday = None
 
 logger = logging.getLogger("cpm.routers.erp")
 
@@ -56,6 +69,38 @@ async def _get_or_create_mapping(
     return mapping
 
 
+async def _build_offset_to_iso(
+    db: AsyncSession, project
+) -> Callable[[int], str] | None:
+    """當專案已設定開工日期時，回傳「天數偏移 -> ISO 日期字串」函式；否則 None。
+
+    Batch 3 (FEAT-2)：以 workcal.offset_to_date 把 CPM 的 es/ef (工作天偏移)
+    換算成真實日曆日期 (跳過非工作日 work_days 與 project_holidays)。
+    防呆：start_date / work_days 欄位或 workcal 模組尚未落地時回 None，
+    payload 維持既有形狀 (日期為 None)。
+    """
+    start_date = getattr(project, "start_date", None)
+    if start_date is None or _offset_to_date is None:
+        return None
+
+    work_days = (getattr(project, "work_days", None) or "1111110")
+    holidays: set = set()
+    if _ProjectHoliday is not None:
+        rows = await db.execute(
+            select(_ProjectHoliday.holiday_date).where(
+                _ProjectHoliday.project_id == project.project_id
+            )
+        )
+        holidays = {d for d in rows.scalars().all() if d is not None}
+
+    def to_iso(offset: int) -> str:
+        return _offset_to_date(
+            start_date, max(int(offset or 0), 0), work_days, holidays
+        ).isoformat()
+
+    return to_iso
+
+
 @router.post(
     "/{project_id}/erp/sync",
     status_code=status.HTTP_202_ACCEPTED,
@@ -74,6 +119,9 @@ async def sync_erp(
     """
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
     tasks = await _load_tasks(db, project_id)
+
+    # Batch 3 (FEAT-2)：專案有開工日期時，把 es/ef 換算成真實 ISO 日期帶入 payload。
+    offset_to_iso = await _build_offset_to_iso(db, project)
 
     event_ids: list[str] = []
     for t in tasks:
@@ -94,6 +142,13 @@ async def sync_erp(
             "float_time": t.float_time or 0,
             "is_critical": bool(t.is_critical),
         }
+        if offset_to_iso is not None:
+            es = int(t.es or 0)
+            ef = int(t.ef or 0)
+            # 計畫開工 = 第 es 個工作天；計畫完工 = 第 ef-1 個工作天 (最後一個
+            # 施作日)。零工期 (里程碑) 任務以開工日為完工日，避免負偏移。
+            sync_payload["start_date"] = offset_to_iso(es)
+            sync_payload["finish_date"] = offset_to_iso(max(ef - 1, es))
 
         event = SyncEvent(
             tenant_id=ctx.tenant_id,

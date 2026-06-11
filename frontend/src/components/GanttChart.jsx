@@ -23,6 +23,16 @@ import { t } from '../i18n';
  *       提供時：依完成百分比於目前條形內以較深色填滿；落後（目前條形右緣
  *       超過計畫條形右緣，且有 baseline）時以紅色外框淡染標示。
  *       未提供時維持原本渲染（不填色、不淡染）。
+ *   dayDates? : list[str]   (選用，Batch 3 實際日期軸；ISO 日期，索引=工期偏移 0..N)
+ *       提供時：日刻度表頭改顯示 MM/DD（每 2 欄一筆避免擁擠；每月 1 日加粗標記），
+ *       刻度與條形 tooltip 顯示實際日期（計畫開工/計畫完工）。
+ *       未提供時維持原本「天數」刻度渲染。
+ *
+ *   依賴箭頭（Batch 3）：當任務帶有 links（[{predecessor_task_id, dep_type, lag_days}]）
+ *   或 predecessors（視為 FS+0）時，以絕對定位 SVG 覆蓋層繪製肘形連接線：
+ *   起點錨於前置任務條形（FS/FF: 條形結束 x=pred.ef*30；SS/SF: 條形開始 x=pred.es*30），
+ *   終點錨於後繼任務條形開始（FS/SS）或結束（FF/SF），末端帶小箭頭；
+ *   兩端任務皆為要徑時紅色、否則灰色。
  *
  * 繪製規則 (沿用原型外觀)：
  *   - 每一列代表一個任務 (task)
@@ -46,6 +56,27 @@ function isCritical(task) {
   return Boolean(task.is_critical) || task.float_time === 0;
 }
 
+// Batch 3：'2026-07-01' -> '07/01'（以字串切割避免時區位移）
+function isoMonthDay(iso) {
+  const parts = String(iso || '').split('-');
+  return parts.length === 3 ? `${parts[1]}/${parts[2]}` : String(iso || '');
+}
+
+// Batch 3：是否為每月 1 日（首月標記）
+function isFirstOfMonth(iso) {
+  return /^\d{4}-\d{2}-01$/.test(String(iso || ''));
+}
+
+// Batch 3：取得任務的依賴連結；無 links 時由 predecessors 衍生（FS+0，向後相容）
+function taskLinks(task) {
+  if (Array.isArray(task.links) && task.links.length > 0) return task.links;
+  return (task.predecessors || []).map((p) => ({
+    predecessor_task_id: p,
+    dep_type: 'FS',
+    lag_days: 0,
+  }));
+}
+
 export default function GanttChart({
   tasks = [],
   region = 'TW',
@@ -53,6 +84,7 @@ export default function GanttChart({
   overCapacityDays,
   baseline,
   progress,
+  dayDates,
 }) {
   const draggable = typeof onTaskDurationChange === 'function';
 
@@ -183,6 +215,45 @@ export default function GanttChart({
 
   const chartWidth = totalDays * DAY_WIDTH;
 
+  // ---- Batch 3：實際日期軸（dayDates 提供時啟用）----
+  const hasDates = Array.isArray(dayDates) && dayDates.length > 0;
+  // 每 k 欄顯示一筆 MM/DD 避免擁擠（DAY_WIDTH=30px 下 2 欄一筆恰好）
+  const DATE_LABEL_EVERY = 2;
+
+  // ---- Batch 3：依賴箭頭（elbow connector）資料 ----
+  // 錨點：FS/FF 起於 pred.ef*30（條形結束）；SS/SF 起於 pred.es*30（條形開始）。
+  // 終點：FS/SS 至 succ 條形開始（es*30）；FF/SF 至 succ 條形結束（ef*30）。
+  const rowIndexById = {};
+  const taskById = {};
+  tasks.forEach((tk, i) => {
+    rowIndexById[tk.task_id] = i;
+    taskById[tk.task_id] = tk;
+  });
+  const connectors = [];
+  tasks.forEach((succ) => {
+    taskLinks(succ).forEach((lnk, li) => {
+      const pred = taskById[lnk.predecessor_task_id];
+      if (!pred || pred.task_id === succ.task_id) return;
+      const dep = String(lnk.dep_type || 'FS').toUpperCase();
+      const lag = Number(lnk.lag_days) || 0;
+      const fromStart = dep === 'SS' || dep === 'SF'; // 錨於前置條形「開始」
+      const toEnd = dep === 'FF' || dep === 'SF'; // 指向後繼條形「結束」
+      const sx = (fromStart ? Number(pred.es) || 0 : Number(pred.ef) || 0) * DAY_WIDTH;
+      const ex = (toEnd ? Number(succ.ef) || 0 : Number(succ.es) || 0) * DAY_WIDTH;
+      const sy = rowIndexById[pred.task_id] * ROW_HEIGHT + ROW_HEIGHT / 2;
+      const ey = rowIndexById[succ.task_id] * ROW_HEIGHT + ROW_HEIGHT / 2;
+      connectors.push({
+        key: `dep-${pred.task_id}-${succ.task_id}-${li}`,
+        sx,
+        sy,
+        ex,
+        ey,
+        critical: isCritical(pred) && isCritical(succ),
+        label: `${pred.task_id} ${dep}${lag ? (lag > 0 ? `+${lag}` : `${lag}`) : ''} → ${succ.task_id}`,
+      });
+    });
+  });
+
   return (
     <div
       style={{
@@ -222,6 +293,17 @@ export default function GanttChart({
         >
           {dayTicks.map((d) => {
             const over = overDaysSet.has(d);
+            // Batch 3：實際日期軸 — 有 dayDates 時刻度顯示 MM/DD（每 k 欄一筆 +
+            // 每月 1 日必顯示並加粗標記）；tooltip 顯示完整 ISO 日期。
+            const iso = hasDates && d < dayDates.length ? dayDates[d] : null;
+            const monthStart = iso ? isFirstOfMonth(iso) : false;
+            const showDateLabel = iso && (monthStart || d % DATE_LABEL_EVERY === 0);
+            const tickTitle = [
+              iso || null,
+              over ? `${t(region, 'overCapacity')} · ${t(region, 'day')} ${d}` : null,
+            ]
+              .filter(Boolean)
+              .join(' | ');
             return (
               <div
                 key={`tick-${d}`}
@@ -231,19 +313,19 @@ export default function GanttChart({
                   top: 0,
                   width: DAY_WIDTH,
                   height: '26px',
-                  borderLeft: '1px solid #ececec',
-                  fontSize: '10px',
-                  color: over ? '#c0392b' : '#999',
-                  fontWeight: over ? 700 : 400,
+                  borderLeft: monthStart ? '2px solid #8fa3bd' : '1px solid #ececec',
+                  fontSize: hasDates ? '9px' : '10px',
+                  color: over ? '#c0392b' : monthStart ? '#34495e' : '#999',
+                  fontWeight: over || monthStart ? 700 : 400,
                   textAlign: 'left',
                   paddingLeft: '2px',
                   boxSizing: 'border-box',
                   lineHeight: '26px',
                   background: over ? 'rgba(231, 76, 60, 0.14)' : 'transparent',
                 }}
-                title={over ? `${t(region, 'overCapacity')} · ${t(region, 'day')} ${d}` : undefined}
+                title={tickTitle || undefined}
               >
-                {d}
+                {hasDates ? (showDateLabel ? isoMonthDay(iso) : '') : d}
               </div>
             );
           })}
@@ -252,6 +334,68 @@ export default function GanttChart({
 
       {/* ===== 任務列 (bars) ===== */}
       <div style={{ position: 'relative' }}>
+        {/* Batch 3：依賴箭頭 SVG 覆蓋層（肘形連接線 + 箭頭；要徑紅/一般灰） */}
+        {connectors.length > 0 && (
+          <svg
+            className="gantt-dep-arrows"
+            aria-hidden="true"
+            width={chartWidth}
+            height={tasks.length * ROW_HEIGHT}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: LABEL_WIDTH,
+              width: chartWidth,
+              height: tasks.length * ROW_HEIGHT,
+              pointerEvents: 'none',
+              zIndex: 4,
+              overflow: 'visible',
+            }}
+          >
+            <defs>
+              {/* 箭頭頭部（orient=auto 沿線段方向）：要徑紅 / 一般灰 */}
+              <marker
+                id="gantt-arrow-crit"
+                markerWidth="7"
+                markerHeight="7"
+                refX="6"
+                refY="3.5"
+                orient="auto"
+                markerUnits="userSpaceOnUse"
+              >
+                <path d="M0,0 L7,3.5 L0,7 Z" fill="#e74c3c" />
+              </marker>
+              <marker
+                id="gantt-arrow-norm"
+                markerWidth="7"
+                markerHeight="7"
+                refX="6"
+                refY="3.5"
+                orient="auto"
+                markerUnits="userSpaceOnUse"
+              >
+                <path d="M0,0 L7,3.5 L0,7 Z" fill="#95a5a6" />
+              </marker>
+            </defs>
+            {connectors.map((c) => {
+              // 肘形路徑：自錨點水平外伸 8px -> 垂直至後繼列 -> 水平至目標錨點
+              const elbowX = c.sx + 8;
+              const d = `M ${c.sx} ${c.sy} L ${elbowX} ${c.sy} L ${elbowX} ${c.ey} L ${c.ex} ${c.ey}`;
+              return (
+                <path
+                  key={c.key}
+                  d={d}
+                  fill="none"
+                  stroke={c.critical ? '#e74c3c' : '#95a5a6'}
+                  strokeWidth={c.critical ? 1.8 : 1.4}
+                  markerEnd={`url(#${c.critical ? 'gantt-arrow-crit' : 'gantt-arrow-norm'})`}
+                >
+                  <title>{c.label}</title>
+                </path>
+              );
+            })}
+          </svg>
+        )}
         {/* 資源超載警示帶（Phase 8）：橫跨所有任務列，疊加於指定日欄位之上 */}
         {overDaysSet.size > 0 &&
           dayTicks
@@ -306,6 +450,15 @@ export default function GanttChart({
             : null;
           const hasPct = pct != null;
           const fillWidth = hasPct ? (barWidth * pct) / 100 : 0;
+
+          // Batch 3：實際日期 tooltip（計畫開工 = dayDates[es]；計畫完工 = dayDates[ef-1]）
+          const startIso = hasDates && es < dayDates.length ? dayDates[es] : null;
+          const finishIdx = es + Math.max(duration - 1, 0);
+          const finishIso = hasDates && finishIdx < dayDates.length ? dayDates[finishIdx] : null;
+          const dateTip =
+            startIso && finishIso
+              ? ` | ${t(region, 'plannedStart')} ${startIso} | ${t(region, 'plannedFinish')} ${finishIso}`
+              : '';
 
           return (
             <div
@@ -411,7 +564,7 @@ export default function GanttChart({
                   title={`${task.task_id} | ${t(region, 'duration')}: ${duration} ${t(
                     region,
                     'days'
-                  )} | ES ${es} EF ${task.ef} | ${t(region, 'floatTime')}: ${task.float_time}${
+                  )} | ES ${es} EF ${task.ef} | ${t(region, 'floatTime')}: ${task.float_time}${dateTip}${
                     hasPct ? ` | ${t(region, 'percentComplete')}: ${pct}%` : ''
                   }${behindSchedule ? ` | ${t(region, 'behindSchedule')}` : ''}${
                     draggable ? ` | ${t(region, 'dragHint')}` : ''

@@ -21,14 +21,23 @@
     notifications.notify_line / notify_dingtalk / notify_wecom 投遞；
     channel='LOG' 僅記錄日誌即 SUCCESS。失敗 => retry_count+1 + last_error，
     達上限 => DEAD。
+  3) ERP 實際成本回拉 (``pull_actuals_once``, Batch 3 FEAT-5)：
+    同間隔掃描「啟用中且 api_endpoint 非空」的 tenant_erp_config，逐租戶：
+    載入 task_mapping -> adapter.fetch_actuals(wbs_codes) -> 依 wbs_code 對應回
+    schedule_task_id -> upsert public.task_progress.actual_cost (ERP 有提供
+    percent_complete 時一併更新)；每租戶寫入一筆 sync_event_log
+    (sync_type='COST_PULL'，SUCCESS payload={updated:N, tenant} 或 FAILED + last_error)。
 
 關鍵設計：
     - Worker 使用「自己的」async engine / AsyncSession (sqlite dev 模式下與
       app.database 相同地以 schema_translate_map 將 erp_integration 映射為 None)。
-    - Worker 「不」設定 RLS 的 app.current_tenant；因為 erp_integration schema 未啟用 RLS，
-      跨租戶 worker 可直接掃描，並由程式碼自行以 tenant_id 過濾 (此處事件本身已帶 tenant_id)。
-    - ``scan_once()`` / ``deliver_outbox_once()`` 為冪等的單次掃描，供測試 / 手動執行；
-      ``main()`` 啟動排程器常駐執行。
+    - erp_integration schema 未啟用 RLS：跨租戶 worker 可直接掃描，由程式碼自行以
+      tenant_id 過濾 (事件本身已帶 tenant_id)，故 scan/outbox 路徑「不」設定
+      app.current_tenant。例外：``pull_actuals_once`` 需讀寫 public.tasks /
+      public.task_progress (受 RLS 保護)，故於「該租戶的寫入交易內」以
+      set_tenant_guc 設定 GUC (sqlite 為 no-op)。
+    - ``scan_once()`` / ``deliver_outbox_once()`` / ``pull_actuals_once()`` 為冪等的
+      單次掃描，供測試 / 手動執行；``main()`` 啟動排程器常駐執行。
     - 心跳 (Batch 2 / CHANGE-6b)：每個 tick touch ``/tmp/worker_heartbeat``，
       供 docker-compose healthcheck 以 mtime 年齡判斷 worker 存活。
 """
@@ -49,9 +58,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.automation import notifications
 from app.config import is_sqlite, settings
+from app.database import set_tenant_guc
 from app.erp.acl import CanonicalSyncItem, ErpPushError
 from app.erp.adapters import get_adapter
-from app.models.orm import NotificationConfig, NotificationOutbox
+from app.models.orm import (
+    ErpConfig,
+    NotificationConfig,
+    NotificationOutbox,
+    SyncEvent,
+    Task,
+    TaskMapping,
+    TaskProgress,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -518,12 +536,214 @@ async def deliver_outbox_once() -> dict[str, int]:
     return stats
 
 
+# --------------------------------------------------------------------------- #
+# ERP 實際成本回拉 (Batch 3 — FEAT-5 inbound cost pull)
+# --------------------------------------------------------------------------- #
+async def _pull_tenant_actuals(
+    session: AsyncSession,
+    tenant_id: str,
+    erp_type: Optional[str],
+    api_endpoint: str,
+) -> int:
+    """單一租戶的實際成本回拉，回傳更新 (upsert) 的 task_progress 列數。
+
+    流程：
+      1. 載入該租戶 task_mapping (wbs_code -> schedule_task_id)；無對應即無事可做。
+      2. adapter.fetch_actuals(wbs_codes) —— 在「無 DB 交易」狀態下進行 HTTP 等待
+         (先 commit 結束讀取交易，避免跨網路 I/O 持有連線交易)。
+      3. 於新交易內 set_tenant_guc (public.tasks / task_progress 受 RLS 保護；
+         sqlite no-op)，將每筆實際成本回寫該租戶「所有」含該 task_id 的專案
+         (join tasks 找 project_id)，upsert task_progress.actual_cost
+         (+percent_complete，僅當 ERP 有提供)。
+
+    失敗 (transport / 非 2xx / 未預期) 由呼叫端攔截並寫 FAILED 事件；
+    本函式不 commit —— 與「每租戶一筆 COST_PULL 事件」同交易由呼叫端原子提交。
+    """
+    rows = (
+        (
+            await session.execute(
+                select(TaskMapping).where(TaskMapping.tenant_id == tenant_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    wbs_to_task: dict[str, str] = {
+        m.erp_wbs_code: m.schedule_task_id for m in rows if m.erp_wbs_code
+    }
+    # 結束讀取交易：接下來的 adapter HTTP 等待不應持有 DB 交易。
+    await session.commit()
+
+    if not wbs_to_task:
+        logger.info("[COST_PULL] tenant=%s 無 task_mapping，略過拉取", tenant_id)
+        return 0
+
+    adapter = get_adapter(erp_type, api_endpoint)
+    actuals = await adapter.fetch_actuals(list(wbs_to_task.keys()))
+
+    # 寫入交易開始：先設 RLS GUC (is_local=true，作用域限本交易；sqlite no-op)。
+    await set_tenant_guc(session, tenant_id)
+
+    updated = 0
+    for item in actuals or []:
+        if not isinstance(item, dict):
+            continue
+        wbs_code = str(item.get("wbs_code") or "")
+        task_id = wbs_to_task.get(wbs_code)
+        if not task_id:
+            continue  # ERP 回了未對應的 WBS —— 安全略過
+        try:
+            actual_cost = float(item.get("actual_cost") or 0)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[COST_PULL] tenant=%s wbs=%s actual_cost 無法解析，略過",
+                tenant_id,
+                wbs_code,
+            )
+            continue
+        percent_complete: Optional[int] = None
+        pct_raw = item.get("percent_complete")
+        if pct_raw is not None:
+            try:
+                # 夾在 [0,100]，符合 task_progress 之 CHECK 約束。
+                percent_complete = max(0, min(100, int(round(float(pct_raw)))))
+            except (TypeError, ValueError):
+                percent_complete = None
+
+        # 該租戶「所有」含此 task_id 的專案 (同名任務跨專案皆回寫)。
+        project_ids = (
+            (
+                await session.execute(
+                    select(Task.project_id)
+                    .where(Task.tenant_id == tenant_id, Task.task_id == task_id)
+                    .distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for project_id in project_ids:
+            existing = (
+                await session.execute(
+                    select(TaskProgress).where(
+                        TaskProgress.project_id == project_id,
+                        TaskProgress.task_id == task_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(
+                    TaskProgress(
+                        project_id=project_id,
+                        tenant_id=tenant_id,
+                        task_id=task_id,
+                        actual_cost=actual_cost,
+                        percent_complete=(
+                            percent_complete if percent_complete is not None else 0
+                        ),
+                    )
+                )
+            else:
+                existing.actual_cost = actual_cost
+                if percent_complete is not None:
+                    existing.percent_complete = percent_complete
+                existing.updated_at = func.now()
+            updated += 1
+    return updated
+
+
+async def pull_actuals_once() -> dict[str, int]:
+    """執行單次 ERP 實際成本回拉 (冪等)，回傳統計結果。
+
+    供測試與手動執行使用。對每個「啟用中且 api_endpoint 非空」的
+    tenant_erp_config：拉取 -> 回寫 task_progress -> 寫入「一筆」
+    sync_event_log (sync_type='COST_PULL')：
+      - 成功：status='SUCCESS'，payload={"updated": N, "tenant": tenant_id}
+      - 失敗：status='FAILED'，payload={"tenant": tenant_id} + last_error
+    每租戶獨立 commit —— 單一租戶失敗不影響其他租戶。
+    """
+    _touch_heartbeat()  # 與其他 job 一致：每個 tick 更新心跳檔
+    stats = {"tenants": 0, "updated": 0, "failed": 0}
+    async with WorkerSessionLocal() as session:
+        cfg_rows = (
+            (
+                await session.execute(
+                    select(ErpConfig).where(ErpConfig.is_active.is_(True))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await session.commit()  # 結束設定讀取交易
+        configs = [c for c in cfg_rows if (c.api_endpoint or "").strip()]
+        if not configs:
+            logger.debug("本次 COST_PULL 掃描無「已設定端點」的啟用租戶")
+            return stats
+
+        for cfg in configs:
+            tenant_id = cfg.tenant_id
+            stats["tenants"] += 1
+            try:
+                updated = await _pull_tenant_actuals(
+                    session,
+                    tenant_id,
+                    cfg.erp_type,
+                    (cfg.api_endpoint or "").strip(),
+                )
+                session.add(
+                    SyncEvent(
+                        tenant_id=tenant_id,
+                        mapping_id=None,
+                        sync_type="COST_PULL",
+                        payload={"updated": updated, "tenant": tenant_id},
+                        status="SUCCESS",
+                        retry_count=0,
+                    )
+                )
+                await session.commit()  # 進度回寫 + 事件 同交易原子落地
+                stats["updated"] += updated
+                logger.info("[COST_PULL] tenant=%s 完成 updated=%d", tenant_id, updated)
+            except Exception as exc:  # noqa: BLE001 - 單一租戶失敗不可拖垮整批
+                logger.exception("[COST_PULL] tenant=%s 拉取失敗", tenant_id)
+                stats["failed"] += 1
+                try:
+                    await session.rollback()
+                    session.add(
+                        SyncEvent(
+                            tenant_id=tenant_id,
+                            mapping_id=None,
+                            sync_type="COST_PULL",
+                            payload={"tenant": tenant_id},
+                            status="FAILED",
+                            retry_count=0,
+                            last_error=str(exc)[:2000],
+                        )
+                    )
+                    await session.commit()
+                except Exception:  # noqa: BLE001 - 事件記錄失敗僅記錄日誌
+                    logger.exception(
+                        "[COST_PULL] tenant=%s 寫入 FAILED 事件時發生例外", tenant_id
+                    )
+                    try:
+                        await session.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+    logger.info(
+        "COST_PULL 完成：tenants=%d updated=%d failed=%d",
+        stats["tenants"],
+        stats["updated"],
+        stats["failed"],
+    )
+    return stats
+
+
 async def main() -> None:
     """啟動 APScheduler 排程器並常駐執行。
 
     以 ``settings.erp_scan_interval_seconds`` 為間隔週期性呼叫 ``scan_once``
-    (ERP 拋轉) 與 ``deliver_outbox_once`` (通知投遞)。支援 SIGINT / SIGTERM
-    優雅關閉。
+    (ERP 拋轉)、``deliver_outbox_once`` (通知投遞) 與 ``pull_actuals_once``
+    (實際成本回拉, Batch 3)。支援 SIGINT / SIGTERM 優雅關閉。
     """
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
@@ -545,9 +765,19 @@ async def main() -> None:
         coalesce=True,
         next_run_time=None,
     )
+    # Batch 3 (FEAT-5)：ERP 實際成本回拉 job (同間隔；與前兩者彼此獨立)
+    scheduler.add_job(
+        pull_actuals_once,
+        trigger="interval",
+        seconds=settings.erp_scan_interval_seconds,
+        id="erp_cost_pull",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=None,
+    )
 
     logger.info(
-        "ERP 同步 / 通知投遞 Worker 啟動，掃描間隔=%ds，最大重試=%d",
+        "ERP 同步 / 通知投遞 / 成本回拉 Worker 啟動，掃描間隔=%ds，最大重試=%d",
         settings.erp_scan_interval_seconds,
         settings.erp_max_retries,
     )
@@ -563,6 +793,10 @@ async def main() -> None:
         await deliver_outbox_once()
     except Exception:  # noqa: BLE001
         logger.exception("啟動時首次 outbox 投遞失敗 (將由排程繼續重試)")
+    try:
+        await pull_actuals_once()
+    except Exception:  # noqa: BLE001
+        logger.exception("啟動時首次實際成本回拉失敗 (將由排程繼續重試)")
 
     # 以 Event 等待關閉訊號，保持常駐
     stop_event = asyncio.Event()

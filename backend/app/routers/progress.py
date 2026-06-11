@@ -40,6 +40,7 @@ from app.routers.projects import (
     _get_project_or_404,
     _load_dependencies,
     _load_tasks,
+    version_conflict_response,
 )
 from app.schemas.evm import BaselineOut, EvmResult, ProgressEntry
 
@@ -160,6 +161,13 @@ async def get_progress(
 async def set_progress(
     project_id: str,
     payload: list[ProgressEntry],
+    expected_version: int | None = Query(
+        default=None,
+        description=(
+            "FEAT-3 樂觀併發: 期望的專案版本 (query param, 避免改變 list body "
+            "形狀); 提供且不符當前 project.version 時回 409 版本衝突。"
+        ),
+    ),
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
     _role: None = Depends(require_role("editor")),
@@ -168,9 +176,15 @@ async def set_progress(
 
     - 依 task_id upsert 至 task_progress; payload 未列出的既有進度列保留不動。
     - tenant_id 一律取自 ctx (寫入隔離, 絕不信任輸入)。
+    - FEAT-3: expected_version (query param) 提供且不符 -> 409, 不做任何寫入。
     回傳更新後的完整進度清單 (依 task_id 排序)。
     """
-    await _get_project_or_404(db, project_id, ctx.tenant_id)
+    project = await _get_project_or_404(db, project_id, ctx.tenant_id)
+
+    # FEAT-3 樂觀併發：先檢查版本，衝突即不做任何寫入。
+    conflict = version_conflict_response(project, expected_version)
+    if conflict is not None:
+        return conflict
 
     existing = await _load_progress(db, project_id)
     by_task = {row.task_id: row for row in existing}

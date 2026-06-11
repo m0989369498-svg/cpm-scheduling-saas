@@ -110,18 +110,25 @@ export async function updateTask(projectId, taskId, patch) {
 }
 
 // 拖曳改工期專用路徑：更新工期後整案重算 CPM
-export async function updateTaskDuration(projectId, taskId, duration) {
+// expectedVersion（選用，Batch 3 樂觀鎖）：帶上時後端版本不符回 409。
+export async function updateTaskDuration(projectId, taskId, duration, expectedVersion) {
+  const body = { duration }
+  if (expectedVersion != null) body.expected_version = expectedVersion
   const res = await apiClient.put(
     `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/duration`,
-    { duration },
+    body,
   )
   return res.data
 }
 
 // 刪除任務（含其相依）並重算
-export async function deleteTask(projectId, taskId) {
+// expectedVersion（選用）：以 request body 附帶樂觀鎖版本（後端支援時生效）。
+export async function deleteTask(projectId, taskId, expectedVersion) {
+  const config = {}
+  if (expectedVersion != null) config.data = { expected_version: expectedVersion }
   const res = await apiClient.delete(
     `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`,
+    config,
   )
   return res.data
 }
@@ -129,6 +136,38 @@ export async function deleteTask(projectId, taskId) {
 // 刪除專案
 export async function deleteProject(projectId) {
   const res = await apiClient.delete(`/projects/${encodeURIComponent(projectId)}`)
+  return res.data
+}
+
+// ---- Batch 3：實際日期（假日）+ 回收桶（軟刪除） ----
+
+// 取得專案假日清單 -> [{holiday_date, name}]
+export async function getHolidays(projectId) {
+  const res = await apiClient.get(`/projects/${encodeURIComponent(projectId)}/holidays`)
+  return res.data
+}
+
+// 儲存專案假日清單（整批取代 upsert；body list[{holiday_date, name}]）
+export async function saveHolidays(projectId, list) {
+  const res = await apiClient.put(`/projects/${encodeURIComponent(projectId)}/holidays`, list)
+  return res.data
+}
+
+// 列出回收桶（軟刪除專案，僅 admin）-> list[ProjectSummary]
+export async function getTrash() {
+  const res = await apiClient.get('/projects/trash')
+  return res.data
+}
+
+// 還原軟刪除專案（僅 admin）
+export async function restoreProject(projectId) {
+  const res = await apiClient.post(`/projects/${encodeURIComponent(projectId)}/restore`)
+  return res.data
+}
+
+// 永久刪除（硬刪除 cascade，僅 admin）
+export async function purgeProject(projectId) {
+  const res = await apiClient.delete(`/projects/${encodeURIComponent(projectId)}/purge`)
   return res.data
 }
 

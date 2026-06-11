@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS public.projects (
     tenant_id     VARCHAR(50)  NOT NULL REFERENCES public.tenants(tenant_id),
     project_name  VARCHAR(255) NOT NULL,                  -- 專案名稱
     region        VARCHAR(20)  NOT NULL DEFAULT 'TW',     -- 區域 (TW / CN)
+    -- Batch 3 FEAT-2：真實日期 + 工作日曆 (real dates + working calendar)
+    start_date    DATE         NULL,                      -- 開工日期 (NULL = 未設定)
+    work_days     VARCHAR(7)   NOT NULL DEFAULT '1111110',-- 週一..週日 1=工作日 (營造預設含週六)
+    -- Batch 3 FEAT-3：樂觀併發控制 (optimistic concurrency)
+    version       INT          NOT NULL DEFAULT 0,        -- 每次重算/更新 +1
+    -- Batch 3 FEAT-4：軟刪除 / 回收桶 (soft delete / recycle bin)
+    deleted_at    TIMESTAMPTZ  NULL,                      -- 刪除時間 (NULL = 未刪除)
+    deleted_by    VARCHAR(150) NULL,                      -- 刪除操作者 (username)
     created_at    TIMESTAMPTZ  DEFAULT now(),
     updated_at    TIMESTAMPTZ  DEFAULT now()
 );
@@ -65,12 +73,16 @@ CREATE TABLE IF NOT EXISTS public.tasks (
 );
 
 -- 任務依賴 (task_dependencies) — 前置任務關係 ----------------------------------
+--   Batch 3 FEAT-1：dep_type (FS/SS/FF/SF) + lag_days (可為負 = 提前 lead)。
+--   預設 FS + 0 => 與舊版「完成-開始」語義完全相容。
 CREATE TABLE IF NOT EXISTS public.task_dependencies (
     id                   BIGSERIAL    PRIMARY KEY,
     project_id           VARCHAR(64)  NOT NULL,
     tenant_id            VARCHAR(50)  NOT NULL,
     task_id              VARCHAR(100) NOT NULL,           -- 後繼任務
     predecessor_task_id  VARCHAR(100) NOT NULL,           -- 前置任務
+    dep_type             VARCHAR(2)   NOT NULL DEFAULT 'FS', -- FS/SS/FF/SF
+    lag_days             INT          NOT NULL DEFAULT 0, -- 延遲天數 (負值 = 提前)
     UNIQUE (project_id, task_id, predecessor_task_id)
 );
 
@@ -603,6 +615,35 @@ CREATE TABLE IF NOT EXISTS erp_integration.notification_outbox (
 -- worker 掃描用索引：WHERE status='PENDING' AND retry_count < max
 CREATE INDEX IF NOT EXISTS idx_notification_outbox_status
     ON erp_integration.notification_outbox(status, retry_count);
+
+-- =============================================================================
+-- 4.12 Batch 3 (FEAT-2) — 專案假日 project_holidays (public schema，RLS ENABLE+FORCE)
+-- -----------------------------------------------------------------------------
+-- 每專案的例外停工日 (國定假日 / 颱風假等)，搭配 projects.work_days 工作日曆
+-- 將 CPM 的「工作日 offset」換算為真實日期 (app/core/workcal.py)。
+-- 受 RLS 保護 (與 tasks / projects 一致)；本區塊置於 GRANT 區塊之前，
+-- 方能被「GRANT ON ALL TABLES IN SCHEMA public」一併涵蓋。
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS public.project_holidays (
+    id            BIGSERIAL    PRIMARY KEY,
+    project_id    VARCHAR(64)  NOT NULL REFERENCES public.projects(project_id) ON DELETE CASCADE,
+    tenant_id     VARCHAR(50)  NOT NULL,
+    holiday_date  DATE         NOT NULL,                  -- 假日日期
+    name          VARCHAR(120) DEFAULT '',                -- 假日名稱 (e.g. 端午節)
+    UNIQUE (project_id, holiday_date)
+);
+
+-- 常用查詢索引 -----------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_project_holidays_project ON public.project_holidays(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_holidays_tenant  ON public.project_holidays(tenant_id);
+
+-- Row Level Security — 與 tasks / projects 相同的多租戶政策 --------------------
+ALTER TABLE public.project_holidays ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.project_holidays FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_project_holidays ON public.project_holidays;
+CREATE POLICY tenant_isolation_project_holidays ON public.project_holidays
+    USING       (tenant_id = current_setting('app.current_tenant', true))
+    WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
 
 -- =============================================================================
 -- 5. 應用程式連線角色 cpm_app (NON-SUPERUSER) — RLS 真正生效的關鍵

@@ -24,6 +24,16 @@ import ProgressPanel from './ProgressPanel';
 
 const REGIONS = ['TW', 'CN'];
 const STATUS_VALUES = ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'DELAYED'];
+// Batch 3：依賴類型（FS 完成-開始 / SS 開始-開始 / FF 完成-完成 / SF 開始-完成）
+const DEP_TYPES = ['FS', 'SS', 'FF', 'SF'];
+
+// Batch 3：依賴連結顯示標籤 — 'A'（FS+0）或 'A(SS+2)' / 'A(FS-1)'
+function linkLabel(l) {
+  const dep = String(l.dep_type || 'FS').toUpperCase();
+  const lag = Number(l.lag_days) || 0;
+  if (dep === 'FS' && lag === 0) return l.predecessor_task_id;
+  return `${l.predecessor_task_id}(${dep}${lag ? (lag > 0 ? `+${lag}` : `${lag}`) : ''})`;
+}
 
 // 狀態翻譯輔助：相容 t() 是否支援 'statuses.X' 點路徑。
 // 後端/前端 i18n 約定 statuses 為子表 (sub-map)。先試點路徑，
@@ -63,6 +73,7 @@ export default function ScheduleBoard() {
     syncErp,
     loadProgress,
     loadBaseline,
+    updateTaskLinks,
   } = useScheduleStore();
 
   // 寫入權限：editor 以上可寫；viewer 僅讀（隱藏所有寫入動作）。
@@ -85,6 +96,8 @@ export default function ScheduleBoard() {
   const [showProjectForm, setShowProjectForm] = useState(false);
   // Phase 8 分頁：'schedule'（排程/甘特圖）| 'resources'（資源撫平）| 'risk'（風險分析）
   const [activeTab, setActiveTab] = useState('schedule');
+  // Batch 3：依賴編輯彈窗 — { taskId, draft: { [otherTaskId]: {checked, dep_type, lag_days} } } | null
+  const [depEdit, setDepEdit] = useState(null);
 
   // 掛載時載入專案清單
   useEffect(() => {
@@ -223,6 +236,64 @@ export default function ScheduleBoard() {
     // eslint-disable-next-line no-alert
     if (!window.confirm(t(region, 'confirmDeleteTask'))) return;
     await removeTask(taskId);
+  };
+
+  // ---- Batch 3：依賴編輯（dep_type FS/SS/FF/SF + lag）----
+
+  // 開啟依賴編輯彈窗：以目標任務現有 links（無則由 predecessors 衍生 FS+0）
+  // 初始化「其他每個任務」一列草稿 {checked, dep_type, lag_days}。
+  const openDepEditor = (task) => {
+    const links =
+      Array.isArray(task.links) && task.links.length > 0
+        ? task.links
+        : (task.predecessors || []).map((p) => ({
+            predecessor_task_id: p,
+            dep_type: 'FS',
+            lag_days: 0,
+          }));
+    const byPred = {};
+    links.forEach((l) => {
+      if (l && l.predecessor_task_id != null) byPred[l.predecessor_task_id] = l;
+    });
+    const draft = {};
+    tasks.forEach((other) => {
+      if (other.task_id === task.task_id) return;
+      const l = byPred[other.task_id];
+      draft[other.task_id] = {
+        checked: Boolean(l),
+        dep_type: l ? String(l.dep_type || 'FS').toUpperCase() : 'FS',
+        lag_days: l ? (l.lag_days ?? 0) : 0,
+      };
+    });
+    setDepEdit({ taskId: task.task_id, draft });
+  };
+
+  // 更新依賴草稿某一列
+  const setDepDraft = (otherId, patch) => {
+    setDepEdit((prev) =>
+      prev
+        ? {
+            ...prev,
+            draft: { ...prev.draft, [otherId]: { ...prev.draft[otherId], ...patch } },
+          }
+        : prev,
+    );
+  };
+
+  // 儲存依賴：勾選列 -> links，呼叫 store.updateTaskLinks（帶 expected_version 樂觀鎖；
+  // 409 由 store 重載專案並以 conflictReloaded 提示）。
+  const handleSaveDeps = async () => {
+    if (!depEdit) return;
+    const links = Object.entries(depEdit.draft)
+      .filter(([, v]) => v && v.checked)
+      .map(([pid, v]) => ({
+        predecessor_task_id: pid,
+        dep_type: v.dep_type || 'FS',
+        lag_days: Number.parseInt(v.lag_days, 10) || 0,
+      }));
+    const { taskId } = depEdit;
+    setDepEdit(null);
+    await updateTaskLinks(taskId, links);
   };
 
   const handleDownloadReport = () => {
@@ -393,6 +464,91 @@ export default function ScheduleBoard() {
         />
       )}
 
+      {/* ===== Batch 3：依賴編輯彈窗（dep_type + lag） ===== */}
+      {depEdit && (
+        <div
+          className="cpm-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={() => setDepEdit(null)}
+        >
+          <div className="cpm-modal dep-popover" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="cpm-modal-header">
+              <h2 className="cpm-modal-title">
+                {t(region, 'editDependencies')} — {depEdit.taskId}
+              </h2>
+              <button
+                type="button"
+                className="cpm-modal-close"
+                aria-label={t(region, 'cancel')}
+                onClick={() => setDepEdit(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="cpm-modal-body">
+              {/* 標頭：前置任務 / 依賴類型 / 延滯天數 */}
+              <div className="dep-popover-head">
+                <span style={{ flex: '1 1 auto' }}>{t(region, 'predecessors')}</span>
+                <span style={{ width: '70px' }}>{t(region, 'dependencyType')}</span>
+                <span style={{ width: '70px' }}>{t(region, 'lagDays')}</span>
+              </div>
+              {tasks
+                .filter((o) => o.task_id !== depEdit.taskId)
+                .map((o) => {
+                  const row =
+                    depEdit.draft[o.task_id] || { checked: false, dep_type: 'FS', lag_days: 0 };
+                  return (
+                    <div key={o.task_id} className="dep-popover-row">
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={row.checked}
+                          onChange={(e) => setDepDraft(o.task_id, { checked: e.target.checked })}
+                        />
+                        <span style={{ fontWeight: 700 }}>{o.task_id}</span>
+                        <span className="cpm-muted">{o.task_name}</span>
+                      </label>
+                      {row.checked && (
+                        <>
+                          <select
+                            value={row.dep_type}
+                            onChange={(e) => setDepDraft(o.task_id, { dep_type: e.target.value })}
+                            title={t(region, 'dependencyType')}
+                          >
+                            {DEP_TYPES.map((dt) => (
+                              <option key={dt} value={dt}>
+                                {dt}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            type="number"
+                            step="1"
+                            value={row.lag_days}
+                            onChange={(e) => setDepDraft(o.task_id, { lag_days: e.target.value })}
+                            title={t(region, 'lagDays')}
+                            style={{ ...inputStyle, width: '70px' }}
+                          />
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              {tasks.length <= 1 && <div className="cpm-muted">{t(region, 'none')}</div>}
+            </div>
+            <div className="cpm-modal-footer">
+              <button type="button" className="secondary" onClick={() => setDepEdit(null)}>
+                {t(region, 'cancel')}
+              </button>
+              <button type="button" onClick={handleSaveDeps}>
+                {t(region, 'save')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ===== 狀態列 ===== */}
       {loading && (
         <div style={{ padding: '8px', color: '#2980b9' }}>{t(region, 'loading')}…</div>
@@ -437,6 +593,15 @@ export default function ScheduleBoard() {
                 {currentProject.project_duration} {t(region, 'days')}
               </div>
             </div>
+            {/* Batch 3：開工日期（有設定時顯示於工期旁） */}
+            {currentProject.start_date && (
+              <div>
+                <div style={{ fontSize: '12px', opacity: 0.8 }}>{t(region, 'startDate')}</div>
+                <div style={{ fontSize: '16px', fontWeight: 700 }}>
+                  {currentProject.start_date}
+                </div>
+              </div>
+            )}
             <div style={{ flex: 1, minWidth: '200px' }}>
               <div style={{ fontSize: '12px', opacity: 0.8 }}>{t(region, 'criticalPath')}</div>
               <div style={{ fontSize: '15px', fontWeight: 700, color: '#ff7675' }}>
@@ -529,6 +694,7 @@ export default function ScheduleBoard() {
                 overCapacityDays={overCapacityDays}
                 baseline={baseline}
                 progress={progressMap}
+                dayDates={currentProject.day_dates || undefined}
               />
             ) : (
               <div style={{ padding: '24px', textAlign: 'center', color: '#999', border: '1px dashed #ddd', borderRadius: '6px' }}>
@@ -589,7 +755,26 @@ export default function ScheduleBoard() {
                     <td style={tdStyle}>{tk.float_time}</td>
                     <td style={tdStyle}>{critical ? '🔥' : ''}</td>
                     <td style={{ ...tdStyle, color: '#666' }}>
-                      {(tk.predecessors || []).join(', ')}
+                      {/* Batch 3：有 links 時以 PRED(類型±lag) 顯示；否則沿用 predecessors */}
+                      {Array.isArray(tk.links) && tk.links.length > 0
+                        ? tk.links.map((l) => linkLabel(l)).join(', ')
+                        : (tk.predecessors || []).join(', ')}
+                      {canWrite && (
+                        <button
+                          type="button"
+                          style={{
+                            ...btnStyle,
+                            padding: '2px 8px',
+                            fontSize: '11px',
+                            background: '#7f8c8d',
+                            marginLeft: '6px',
+                          }}
+                          onClick={() => openDepEditor(tk)}
+                          title={t(region, 'editDependencies')}
+                        >
+                          {t(region, 'editDependencies')}
+                        </button>
+                      )}
                     </td>
                     {canWrite && (
                       <td style={tdStyle}>

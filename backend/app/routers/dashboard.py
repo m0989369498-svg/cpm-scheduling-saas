@@ -138,7 +138,11 @@ async def get_dashboard(
     """
     result = await db.execute(
         select(Project)
-        .where(Project.tenant_id == ctx.tenant_id)
+        .where(
+            Project.tenant_id == ctx.tenant_id,
+            # FEAT-4 軟刪除: 已進回收桶的專案不納入儀表板彙總。
+            Project.deleted_at.is_(None),
+        )
         .order_by(Project.created_at)
     )
     projects = list(result.scalars().all())

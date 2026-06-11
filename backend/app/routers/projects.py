@@ -1,12 +1,18 @@
 """專案路由（Projects router）。
 
 職責：
-  - 專案 CRUD（建立 / 查詢 / 更新中繼資料 / 刪除）
+  - 專案 CRUD（建立 / 查詢 / 更新中繼資料 / 軟刪除）
+  - 回收桶（recycle bin）：/trash 清單、還原 (restore)、永久刪除 (purge)（admin）
+  - 工作日曆：專案假日 (holidays) 管理 + day_dates（offset -> ISO 日期）輸出
   - 共用的 recompute_project() 助手：載入 DAG -> 跑 CPM -> 回寫 es/ef/ls/lf/float_time/is_critical -> 回傳 ProjectOut
   - PDF 報表串流（/report）
 
 recompute_project() 為全系統共用的重算入口，create / add-task / update / duration / delete
 等路徑都會呼叫它，確保 CPM 結果與 DB 一致，避免重複實作。
+Batch 3：每次重算將 project.version +1（FEAT-3 樂觀併發）。
+
+路由順序注意：/projects/trash 必須宣告於 /projects/{project_id} 之前，
+否則 "trash" 會被當成 project_id 匹配。
 """
 
 from __future__ import annotations
@@ -15,23 +21,27 @@ import functools
 import io
 import uuid
 import logging
+from datetime import date, datetime, timezone
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import verify_tenant, get_db, TenantContext, require_role
-from app.models.orm import Project, Task, TaskDependency
+from app.models.orm import Project, ProjectHoliday, Task, TaskDependency
 from app.schemas.schedule import (
+    DependencyLink,
+    HolidayEntry,
     ProjectCreate,
-    ProjectBase,
     ProjectOut,
     ProjectSummary,
+    ProjectUpdate,
     TaskDefinition,
     TaskResult,
 )
+from app.core import workcal
 from app.core.cpm_engine import calculate_cpm, project_duration, critical_path
 from app.core import audit
 from app.automation import reports
@@ -40,12 +50,41 @@ logger = logging.getLogger("cpm.routers.projects")
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
+# FEAT-3 樂觀併發：版本衝突時回應的訊息（前端據此提示並重載專案）。
+VERSION_CONFLICT_DETAIL = "版本衝突：專案已被其他人修改"
+
 
 # ---------------------------------------------------------------------------
 # 內部工具：載入 / 組裝 / 回寫
 # ---------------------------------------------------------------------------
+def version_conflict_response(
+    project: Project, expected_version: int | None
+) -> JSONResponse | None:
+    """FEAT-3 樂觀併發檢查（optimistic concurrency check）。
+
+    expected_version 為 None（未提供）=> 不檢查（向下相容），回 None。
+    與當前 project.version 相符 => 回 None（放行）。
+    不符 => 回 409 JSONResponse，body 形狀（契約）：
+      {"detail": "版本衝突：專案已被其他人修改", "current_version": N}
+    呼叫端（端點）應 `if conflict is not None: return conflict`。
+    """
+    if expected_version is None:
+        return None
+    current = int(project.version or 0)
+    if int(expected_version) == current:
+        return None
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": VERSION_CONFLICT_DETAIL, "current_version": current},
+    )
+
+
 async def _get_project_or_404(
-    db: AsyncSession, project_id: str, tenant_id: str | None = None
+    db: AsyncSession,
+    project_id: str,
+    tenant_id: str | None = None,
+    *,
+    include_deleted: bool = False,
 ) -> Project:
     """取得專案 ORM 物件，找不到回 404。
 
@@ -53,10 +92,16 @@ async def _get_project_or_404(
     (dev 原生模式，無 RLS) 則改以「應用層查詢條件」隔離 —— 故當呼叫端提供
     tenant_id 時，明確加上 ``Project.tenant_id == tenant_id``，確保兩種後端
     皆只回傳當前租戶的專案 (避免 sqlite 下跨租戶讀取)。
+
+    軟刪除（FEAT-4）：預設過濾 ``deleted_at IS NULL``（已進回收桶的專案視同
+    不存在 -> 404）；僅回收桶相關端點（restore / purge）以 include_deleted=True
+    取得已刪除專案。
     """
     stmt = select(Project).where(Project.project_id == project_id)
     if tenant_id is not None:
         stmt = stmt.where(Project.tenant_id == tenant_id)
+    if not include_deleted:
+        stmt = stmt.where(Project.deleted_at.is_(None))
     result = await db.execute(stmt)
     project = result.scalar_one_or_none()
     if project is None:
@@ -83,13 +128,53 @@ async def _load_dependencies(db: AsyncSession, project_id: str) -> list[TaskDepe
     return list(result.scalars().all())
 
 
+async def _load_holidays(db: AsyncSession, project_id: str) -> list[ProjectHoliday]:
+    """載入專案所有例外假日（依日期排序，輸出穩定）。"""
+    result = await db.execute(
+        select(ProjectHoliday)
+        .where(ProjectHoliday.project_id == project_id)
+        .order_by(ProjectHoliday.holiday_date)
+    )
+    return list(result.scalars().all())
+
+
+async def _load_holiday_dates(db: AsyncSession, project_id: str) -> set[date]:
+    """載入專案例外假日的日期集合（供工作日曆換算）。"""
+    return {h.holiday_date for h in await _load_holidays(db, project_id)}
+
+
+def _dependency_maps(
+    deps: list[TaskDependency],
+) -> tuple[dict[str, list[str]], dict[str, list[DependencyLink]]]:
+    """由相依 ORM 列組出兩種視圖（FEAT-1）：
+
+    pred_map  {task_id: [predecessor_task_id, ...]}  傳統前置清單（向下相容）。
+    links_map {task_id: [DependencyLink, ...]}       帶 dep_type / lag_days 的連結。
+    """
+    pred_map: dict[str, list[str]] = {}
+    links_map: dict[str, list[DependencyLink]] = {}
+    for d in deps:
+        pred_map.setdefault(d.task_id, []).append(d.predecessor_task_id)
+        links_map.setdefault(d.task_id, []).append(
+            DependencyLink(
+                predecessor_task_id=d.predecessor_task_id,
+                dep_type=(d.dep_type or "FS"),
+                lag_days=int(d.lag_days or 0),
+            )
+        )
+    return pred_map, links_map
+
+
 def _build_task_definitions(
     tasks: list[Task], deps: list[TaskDependency]
 ) -> list[TaskDefinition]:
-    """將 ORM 任務 + 相依 組成 CPM 引擎用的 TaskDefinition 清單。"""
-    pred_map: dict[str, list[str]] = {}
-    for d in deps:
-        pred_map.setdefault(d.task_id, []).append(d.predecessor_task_id)
+    """將 ORM 任務 + 相依 組成 CPM 引擎用的 TaskDefinition 清單。
+
+    FEAT-1：同時填入 predecessors（推導，向下相容）與 links（dep_type/lag_days），
+    使 CPM 引擎（以及重用本助手的 resource_leveling / monte_carlo）取得完整
+    的相依語義。
+    """
+    pred_map, links_map = _dependency_maps(deps)
 
     definitions: list[TaskDefinition] = []
     for t in tasks:
@@ -99,6 +184,7 @@ def _build_task_definitions(
                 task_name=t.task_name or "",
                 duration=t.duration or 0,
                 predecessors=pred_map.get(t.task_id, []),
+                links=links_map.get(t.task_id, []),
                 status=t.status or "PENDING",
             )
         )
@@ -111,11 +197,16 @@ def _to_project_out(
     deps: list[TaskDependency],
     task_results: dict[str, TaskResult],
     duration: int,
+    holidays: set[date] | None = None,
 ) -> ProjectOut:
-    """組裝 ProjectOut（合併 CPM 計算結果）。"""
-    pred_map: dict[str, list[str]] = {}
-    for d in deps:
-        pred_map.setdefault(d.task_id, []).append(d.predecessor_task_id)
+    """組裝 ProjectOut（合併 CPM 計算結果）。
+
+    FEAT-1：任務一併輸出 links（前端據此繪製依賴箭頭 / 編輯依賴）。
+    FEAT-2：start_date 已設定時輸出 day_dates（offset 0..duration 的 ISO 日期，
+            以 work_days 工作日曆 + 例外假日換算）。
+    FEAT-3：輸出 version 供客戶端樂觀併發。
+    """
+    pred_map, links_map = _dependency_maps(deps)
 
     out_tasks: list[TaskResult] = []
     for t in tasks:
@@ -124,6 +215,7 @@ def _to_project_out(
             # 以引擎結果為準，但補回相依與名稱/狀態
             res.task_name = t.task_name or ""
             res.predecessors = pred_map.get(t.task_id, [])
+            res.links = links_map.get(t.task_id, [])
             res.status = t.status or "PENDING"
             out_tasks.append(res)
         else:
@@ -133,6 +225,7 @@ def _to_project_out(
                     task_name=t.task_name or "",
                     duration=t.duration or 0,
                     predecessors=pred_map.get(t.task_id, []),
+                    links=links_map.get(t.task_id, []),
                     status=t.status or "PENDING",
                     es=t.es or 0,
                     ef=t.ef or 0,
@@ -143,6 +236,17 @@ def _to_project_out(
                 )
             )
 
+    # FEAT-2：開工日期已設定時，輸出每個 offset 對應的 ISO 日期。
+    work_days = project.work_days or "1111110"
+    day_dates_out: list[str] | None = None
+    if project.start_date is not None:
+        day_dates_out = [
+            d.isoformat()
+            for d in workcal.day_dates(
+                project.start_date, duration, work_days, holidays or set()
+            )
+        ]
+
     return ProjectOut(
         project_id=project.project_id,
         tenant_id=project.tenant_id,
@@ -150,6 +254,10 @@ def _to_project_out(
         region=project.region,
         project_duration=duration,
         tasks=out_tasks,
+        start_date=project.start_date,
+        work_days=work_days,
+        version=int(project.version or 0),
+        day_dates=day_dates_out,
     )
 
 
@@ -167,17 +275,28 @@ async def recompute_project(
     這是 create / add-task / update / duration / delete 等路徑共用的重算入口。
     CPM 為純函式（無 DB），此處負責持久化結果。
 
+    FEAT-3：每次重算將 project.version +1（任何排程寫入路徑都視為一次修改），
+    供客戶端以 expected_version 做樂觀併發比對。
+
     notify: 已保留作呼叫端相容；FIX-4 後不再於請求交易內阻斷式發送通知 (no-op)。
     """
     tasks = await _load_tasks(db, project.project_id)
     deps = await _load_dependencies(db, project.project_id)
+
+    # FEAT-3：版本 +1（含「刪到清空」等空專案路徑，仍屬一次修改）。
+    project.version = int(project.version or 0) + 1
+
+    # FEAT-2：開工日期已設定時，載入例外假日供 day_dates 換算。
+    holidays: set[date] = set()
+    if project.start_date is not None:
+        holidays = await _load_holiday_dates(db, project.project_id)
 
     definitions = _build_task_definitions(tasks, deps)
 
     # 空專案：不需計算
     if not definitions:
         await db.flush()
-        return _to_project_out(project, tasks, deps, {}, 0)
+        return _to_project_out(project, tasks, deps, {}, 0, holidays=holidays)
 
     try:
         task_results = calculate_cpm(definitions)
@@ -204,7 +323,9 @@ async def recompute_project(
 
     await db.flush()
 
-    project_out = _to_project_out(project, tasks, deps, task_results, duration)
+    project_out = _to_project_out(
+        project, tasks, deps, task_results, duration, holidays=holidays
+    )
 
     # 安全修正 (FIX-4): 移除每次編輯都阻斷請求交易的 best-effort 通知。
     # 原本 await notify (LINE / 釘釘 httpx, 10s timeout) 是在 get_db 的
@@ -228,11 +349,51 @@ async def list_projects(
     ``Project.tenant_id == ctx.tenant_id`` 隔離，確保兩種後端皆只列出當前
     租戶的專案 (避免 sqlite dev 模式下跨租戶外洩)。明確過濾於 PostgreSQL 為
     冗餘但無害 (與 RLS 結果一致)。
+
+    軟刪除（FEAT-4）：排除已進回收桶（deleted_at 非 NULL）的專案。
     """
     result = await db.execute(
         select(Project)
-        .where(Project.tenant_id == ctx.tenant_id)
+        .where(
+            Project.tenant_id == ctx.tenant_id,
+            Project.deleted_at.is_(None),
+        )
         .order_by(Project.created_at)
+    )
+    projects = list(result.scalars().all())
+
+    summaries: list[ProjectSummary] = []
+    for p in projects:
+        tasks = await _load_tasks(db, p.project_id)
+        max_ef = max((t.ef or 0 for t in tasks), default=0)
+        summaries.append(
+            ProjectSummary(
+                project_id=p.project_id,
+                project_name=p.project_name,
+                region=p.region,
+                tenant_id=p.tenant_id,
+                task_count=len(tasks),
+                project_duration=max_ef,
+            )
+        )
+    return summaries
+
+
+# 注意：/trash 必須宣告於 /{project_id} 之前（FastAPI 依宣告順序匹配路由）。
+@router.get("/trash", response_model=list[ProjectSummary])
+async def list_trash(
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("admin")),
+) -> list[ProjectSummary]:
+    """回收桶（FEAT-4，admin 限定）：列出已軟刪除的專案摘要。"""
+    result = await db.execute(
+        select(Project)
+        .where(
+            Project.tenant_id == ctx.tenant_id,
+            Project.deleted_at.is_not(None),
+        )
+        .order_by(Project.deleted_at.desc())
     )
     projects = list(result.scalars().all())
 
@@ -260,7 +421,12 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
     _role: None = Depends(require_role("editor")),
 ) -> ProjectOut:
-    """建立專案：持久化任務 + 相依，跑 CPM，回寫結果。"""
+    """建立專案：持久化任務 + 相依，跑 CPM，回寫結果。
+
+    FEAT-1：schedule_data 內任務若提供 links（dep_type/lag_days），以 links 為準
+    （predecessors 被忽略並由 links 重新推導）；否則 predecessors 視為 FS + 0。
+    FEAT-2：可選 start_date（開工日期）與 work_days（工作日曆）。
+    """
     project_id = payload.project_id or f"PRJ-{uuid.uuid4().hex[:12].upper()}"
 
     # 重複檢查（同 tenant 下 project_id 唯一）
@@ -276,6 +442,9 @@ async def create_project(
         tenant_id=ctx.tenant_id,
         project_name=payload.project_name,
         region=payload.region or ctx.region,
+        start_date=payload.start_date,
+        work_days=payload.work_days or "1111110",
+        version=0,
     )
     db.add(project)
     await db.flush()
@@ -295,15 +464,35 @@ async def create_project(
     await db.flush()
 
     for td in payload.schedule_data:
-        for pred in td.predecessors:
-            db.add(
-                TaskDependency(
-                    project_id=project_id,
-                    tenant_id=ctx.tenant_id,
-                    task_id=td.task_id,
-                    predecessor_task_id=pred,
+        if td.links is not None:
+            # links 提供時為準（predecessors 被忽略）；去重以符合 UNIQUE 約束。
+            seen: set[str] = set()
+            for link in td.links:
+                if link.predecessor_task_id in seen:
+                    continue
+                seen.add(link.predecessor_task_id)
+                db.add(
+                    TaskDependency(
+                        project_id=project_id,
+                        tenant_id=ctx.tenant_id,
+                        task_id=td.task_id,
+                        predecessor_task_id=link.predecessor_task_id,
+                        dep_type=link.dep_type or "FS",
+                        lag_days=int(link.lag_days or 0),
+                    )
                 )
-            )
+        else:
+            for pred in dict.fromkeys(td.predecessors):
+                db.add(
+                    TaskDependency(
+                        project_id=project_id,
+                        tenant_id=ctx.tenant_id,
+                        task_id=td.task_id,
+                        predecessor_task_id=pred,
+                        dep_type="FS",
+                        lag_days=0,
+                    )
+                )
     await db.flush()
 
     project_out = await recompute_project(db, project)
@@ -319,6 +508,10 @@ async def create_project(
                 "project_name": payload.project_name,
                 "region": project.region,
                 "task_count": len(payload.schedule_data),
+                "start_date": (
+                    payload.start_date.isoformat() if payload.start_date else None
+                ),
+                "work_days": project.work_days,
             },
         )
     except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
@@ -356,22 +549,52 @@ async def get_project(
         task_results = {}
         duration = 0
 
-    return _to_project_out(project, tasks, deps, task_results, duration)
+    holidays: set[date] = set()
+    if project.start_date is not None:
+        holidays = await _load_holiday_dates(db, project_id)
+
+    return _to_project_out(
+        project, tasks, deps, task_results, duration, holidays=holidays
+    )
 
 
 @router.put("/{project_id}", response_model=ProjectOut)
 async def update_project(
     project_id: str,
-    payload: ProjectBase,
+    payload: ProjectUpdate,
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
     _role: None = Depends(require_role("editor")),
 ) -> ProjectOut:
-    """更新專案中繼資料（名稱 / 區域）。"""
+    """更新專案中繼資料（名稱 / 區域 / 開工日期 / 工作日曆）。
+
+    FEAT-3：payload.expected_version 提供且不符當前版本 -> 409 版本衝突；
+    更新成功時 version +1。
+    FEAT-2：start_date / work_days 僅於 payload 明確提供時才變更
+    （以 model_fields_set 區分「未提供」與「提供 None / 預設值」，向下相容）。
+    """
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
-    before = {"project_name": project.project_name, "region": project.region}
+
+    conflict = version_conflict_response(project, payload.expected_version)
+    if conflict is not None:
+        return conflict
+
+    before = {
+        "project_name": project.project_name,
+        "region": project.region,
+        "start_date": (
+            project.start_date.isoformat() if project.start_date else None
+        ),
+        "work_days": project.work_days,
+    }
     project.project_name = payload.project_name
     project.region = payload.region or project.region
+    if "start_date" in payload.model_fields_set:
+        project.start_date = payload.start_date
+    if "work_days" in payload.model_fields_set:
+        project.work_days = payload.work_days
+    # FEAT-3：中繼資料更新亦使版本 +1。
+    project.version = int(project.version or 0) + 1
     await db.flush()
 
     # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
@@ -386,6 +609,10 @@ async def update_project(
                 "after": {
                     "project_name": project.project_name,
                     "region": project.region,
+                    "start_date": (
+                        project.start_date.isoformat() if project.start_date else None
+                    ),
+                    "work_days": project.work_days,
                 },
             },
         )
@@ -403,12 +630,83 @@ async def delete_project(
     db: AsyncSession = Depends(get_db),
     _role: None = Depends(require_role("editor")),
 ) -> dict:
-    """刪除專案（任務經 ON DELETE CASCADE 連帶刪除；相依手動清理）。"""
+    """刪除專案（FEAT-4 軟刪除）：標記 deleted_at / deleted_by，進回收桶。
+
+    資料（任務 / 相依 / 進度 / 基準線）全數保留；admin 可由 /projects/trash
+    還原 (restore) 或永久刪除 (purge)。所有讀取路徑均排除已軟刪除專案。
+    """
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
+    project_name = project.project_name
+
+    project.deleted_at = datetime.now(timezone.utc)
+    project.deleted_by = ctx.sub or None
+    await db.flush()
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "PROJECT_DELETE",
+            {"project_id": project_id, "project_name": project_name, "soft": True},
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit PROJECT_DELETE failed (ignored): %s", exc)
+
+    return {"ok": True}
+
+
+@router.post("/{project_id}/restore")
+async def restore_project(
+    project_id: str,
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("admin")),
+) -> dict:
+    """還原回收桶內的專案（FEAT-4，admin 限定）：清除 deleted_at / deleted_by。"""
+    project = await _get_project_or_404(
+        db, project_id, ctx.tenant_id, include_deleted=True
+    )
+    project.deleted_at = None
+    project.deleted_by = None
+    await db.flush()
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "PROJECT_RESTORE",
+            {"project_id": project_id, "project_name": project.project_name},
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit PROJECT_RESTORE failed (ignored): %s", exc)
+
+    return {"ok": True}
+
+
+@router.delete("/{project_id}/purge")
+async def purge_project(
+    project_id: str,
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("admin")),
+) -> dict:
+    """永久刪除專案（FEAT-4，admin 限定）：硬刪除 + 連帶清理。
+
+    任務經 ON DELETE CASCADE 連帶刪除；相依 / 假日（sqlite dev 無 FK 強制）
+    手動清理。此操作不可復原。
+    """
+    project = await _get_project_or_404(
+        db, project_id, ctx.tenant_id, include_deleted=True
+    )
     project_name = project.project_name
 
     await db.execute(
         sa_delete(TaskDependency).where(TaskDependency.project_id == project_id)
+    )
+    await db.execute(
+        sa_delete(ProjectHoliday).where(ProjectHoliday.project_id == project_id)
     )
     await db.delete(project)
     await db.flush()
@@ -418,13 +716,85 @@ async def delete_project(
         await audit.log_action(
             db,
             ctx,
-            "PROJECT_DELETE",
+            "PROJECT_PURGE",
             {"project_id": project_id, "project_name": project_name},
         )
     except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
-        logger.warning("audit PROJECT_DELETE failed (ignored): %s", exc)
+        logger.warning("audit PROJECT_PURGE failed (ignored): %s", exc)
 
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Endpoints —— 專案假日（FEAT-2 工作日曆）
+# ---------------------------------------------------------------------------
+@router.get("/{project_id}/holidays", response_model=list[HolidayEntry])
+async def get_project_holidays(
+    project_id: str,
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+) -> list[HolidayEntry]:
+    """列出專案例外假日（依日期排序）。"""
+    await _get_project_or_404(db, project_id, ctx.tenant_id)
+    rows = await _load_holidays(db, project_id)
+    return [
+        HolidayEntry(holiday_date=r.holiday_date, name=r.name or "") for r in rows
+    ]
+
+
+@router.put("/{project_id}/holidays", response_model=list[HolidayEntry])
+async def set_project_holidays(
+    project_id: str,
+    payload: list[HolidayEntry],
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
+) -> list[HolidayEntry]:
+    """以替換式 upsert 覆寫專案例外假日清單（editor+）。
+
+    先清空既有假日再寫入 payload（同日期去重，符合 UNIQUE(project_id,
+    holiday_date)）；tenant_id 一律取自 ctx（寫入隔離，絕不信任輸入）。
+    回傳更新後的完整假日清單（依日期排序）。
+    """
+    await _get_project_or_404(db, project_id, ctx.tenant_id)
+
+    await db.execute(
+        sa_delete(ProjectHoliday).where(ProjectHoliday.project_id == project_id)
+    )
+    seen: set[date] = set()
+    for entry in payload:
+        if entry.holiday_date in seen:
+            continue
+        seen.add(entry.holiday_date)
+        db.add(
+            ProjectHoliday(
+                project_id=project_id,
+                tenant_id=ctx.tenant_id,
+                holiday_date=entry.holiday_date,
+                name=entry.name or "",
+            )
+        )
+    await db.flush()
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "HOLIDAYS_UPDATE",
+            {
+                "project_id": project_id,
+                "count": len(seen),
+                "dates": sorted(d.isoformat() for d in seen),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit HOLIDAYS_UPDATE failed (ignored): %s", exc)
+
+    rows = await _load_holidays(db, project_id)
+    return [
+        HolidayEntry(holiday_date=r.holiday_date, name=r.name or "") for r in rows
+    ]
 
 
 @router.get("/{project_id}/report")

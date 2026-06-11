@@ -11,12 +11,30 @@ import { t } from '../i18n'
  *   - 變更角色 / 啟用狀態 / 重設密碼（PUT /users/{id}）
  *   - 刪除使用者（含確認；DELETE /users/{id}）
  * 全部操作後端皆 require_role("admin")，並依 ctx.tenant_id 範圍化。
+ *
+ * Batch 3：回收桶（軟刪除專案）區塊 —
+ *   - 列出 GET /projects/trash（軟刪除專案摘要）
+ *   - 還原（POST /projects/{pid}/restore）
+ *   - 永久刪除（DELETE /projects/{pid}/purge；雙重確認）
  */
 const ROLES = ['viewer', 'editor', 'admin']
 
 export default function UserAdminPanel({ region }) {
-  const { role, users, loading, error, region: storeRegion, loadUsers, createUser, updateUser, deleteUser } =
-    useScheduleStore()
+  const {
+    role,
+    users,
+    trash,
+    loading,
+    error,
+    region: storeRegion,
+    loadUsers,
+    createUser,
+    updateUser,
+    deleteUser,
+    loadTrash,
+    restoreProject,
+    purgeProject,
+  } = useScheduleStore()
 
   // 新增使用者表單
   const [form, setForm] = useState({ username: '', password: '', role: 'viewer' })
@@ -24,7 +42,11 @@ export default function UserAdminPanel({ region }) {
   const [pwDrafts, setPwDrafts] = useState({})
 
   useEffect(() => {
-    if (role === 'admin') loadUsers().catch(() => {})
+    if (role === 'admin') {
+      loadUsers().catch(() => {})
+      // Batch 3：載入回收桶（軟刪除專案清單）
+      loadTrash().catch(() => {})
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role])
 
@@ -73,6 +95,22 @@ export default function UserAdminPanel({ region }) {
     // eslint-disable-next-line no-alert
     if (!window.confirm(t(region, 'confirmDeleteUser'))) return
     await deleteUser(u.id).catch(() => {})
+  }
+
+  // ---- Batch 3：回收桶 ----
+
+  // 還原軟刪除專案（store 內會刷新回收桶 + 專案清單）
+  const handleRestore = async (p) => {
+    await restoreProject(p.project_id).catch(() => {})
+  }
+
+  // 永久刪除：雙重確認（不可復原的硬刪除 cascade）
+  const handlePurge = async (p) => {
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(t(region, 'purgeConfirm'))) return
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`${t(region, 'purge')}: ${p.project_id} — ${t(region, 'purgeConfirm')}`)) return
+    await purgeProject(p.project_id).catch(() => {})
   }
 
   return (
@@ -210,6 +248,51 @@ export default function UserAdminPanel({ region }) {
                   onClick={() => handleDelete(u)}
                 >
                   {t(region, 'delete')}
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* ===== Batch 3：回收桶（軟刪除專案，admin 限定） ===== */}
+      <h2 style={{ fontSize: '18px', color: '#2c3e50', margin: '28px 0 12px' }}>
+        🗑 {t(region, 'recycleBin')}
+      </h2>
+      <table>
+        <thead>
+          <tr>
+            <th>{t(region, 'project')} ID</th>
+            <th>{t(region, 'projectName')}</th>
+            <th>{t(region, 'restore')}</th>
+            <th>{t(region, 'purge')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(!trash || trash.length === 0) && (
+            <tr>
+              <td colSpan={4} style={{ textAlign: 'center', color: '#999' }}>
+                {t(region, 'none')}
+              </td>
+            </tr>
+          )}
+          {(trash || []).map((p) => (
+            <tr key={p.project_id}>
+              <td style={{ fontWeight: 600 }}>{p.project_id}</td>
+              <td>{p.project_name}</td>
+              <td>
+                <button
+                  type="button"
+                  className="small"
+                  style={{ background: '#27ae60', borderColor: '#27ae60' }}
+                  onClick={() => handleRestore(p)}
+                >
+                  {t(region, 'restore')}
+                </button>
+              </td>
+              <td>
+                <button type="button" className="small danger" onClick={() => handlePurge(p)}>
+                  {t(region, 'purge')}
                 </button>
               </td>
             </tr>

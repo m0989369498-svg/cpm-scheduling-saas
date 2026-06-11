@@ -17,6 +17,8 @@ import { t } from '../i18n';
  *     project_name: str (必填),
  *     region: 'TW' | 'CN',
  *     project_id?: str (留白則後端指派),
+ *     start_date?: 'YYYY-MM-DD' (選用，Batch 3 開工日期),
+ *     work_days: '1111110' (Batch 3 每週工作日 Mon..Sun；預設週一~週六),
  *     schedule_data: [ { task_id, task_name, duration(int>=0), predecessors:[str], status } ]
  *   }
  *
@@ -65,6 +67,16 @@ export default function ProjectForm({
   const [formRegion, setFormRegion] = useState(REGIONS.includes(defaultRegion) ? defaultRegion : 'TW');
   const [rows, setRows] = useState([makeRow()]);
   const [validationError, setValidationError] = useState('');
+  // Batch 3：開工日期（選用）+ 每週工作日（預設週一~週六，營造業慣例）
+  const [startDate, setStartDate] = useState('');
+  const [workDays, setWorkDays] = useState('1111110');
+
+  // 工作日快速選項（Mon..Sun 7 碼，1=工作日）；標籤依語系顯示
+  const workDayChoices = [
+    { value: '1111100', label: region === 'CN' ? '周一～周五' : '週一～週五' },
+    { value: '1111110', label: region === 'CN' ? '周一～周六' : '週一～週六' },
+    { value: '1111111', label: region === 'CN' ? '全周' : '全週' },
+  ];
 
   const updateRow = (key, patch) => {
     setRows((prev) => prev.map((r) => (r._key === key ? { ...r, ...patch } : r)));
@@ -136,6 +148,9 @@ export default function ProjectForm({
     };
     const pid = projectId.trim();
     if (pid) payload.project_id = pid;
+    // Batch 3：開工日期（選填）+ 每週工作日
+    if (startDate) payload.start_date = startDate;
+    payload.work_days = workDays;
     return payload;
   };
 
@@ -204,6 +219,28 @@ export default function ProjectForm({
                   onChange={(e) => setProjectId(e.target.value)}
                   placeholder="(auto)"
                 />
+              </div>
+              {/* Batch 3：開工日期（選填）— 設定後甘特圖/匯出顯示實際日期 */}
+              <div className="cpm-form-field">
+                <label>
+                  {t(region, 'startDate')} <span className="cpm-optional">({t(region, 'none')})</span>
+                </label>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                />
+              </div>
+              {/* Batch 3：每週工作日快速選擇（週一~週五 / 週一~週六 / 全週） */}
+              <div className="cpm-form-field">
+                <label>{t(region, 'workDays')}</label>
+                <select value={workDays} onChange={(e) => setWorkDays(e.target.value)}>
+                  {workDayChoices.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 

@@ -45,6 +45,74 @@ _YONYOU_STATUS_MAP = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# 入站 (inbound cost pull, Batch 3 FEAT-5) 共用小工具：
+#   各家 ERP 的回應「容器」與「欄位命名」不同，以下兩個 helper 把差異收斂為
+#   正規化清單 [{"wbs_code", "actual_cost", "percent_complete"}]。
+# --------------------------------------------------------------------------- #
+def _rows_from_body(body: Any, *container_keys: str) -> list[dict[str, Any]]:
+    """從 ERP 回應 body 萃取「列清單」。
+
+    支援：裸 list、SAP OData 的 {"d": {"results": [...]}}、以及
+    {<container_key>: [...]} / {"results"|"items"|"data"|"rows": [...]}。
+    無法辨識時回傳空清單 (寧可少不可錯)。
+    """
+    if isinstance(body, list):
+        rows: list[Any] = body
+    elif isinstance(body, dict):
+        rows = []
+        d = body.get("d")
+        if isinstance(d, dict) and isinstance(d.get("results"), list):
+            rows = d["results"]
+        else:
+            for key in (*container_keys, "results", "items", "data", "rows"):
+                val = body.get(key)
+                if isinstance(val, list):
+                    rows = val
+                    break
+    else:
+        rows = []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _normalize_actual(
+    row: dict[str, Any],
+    wbs_keys: tuple[str, ...],
+    cost_keys: tuple[str, ...],
+    pct_keys: tuple[str, ...],
+) -> Optional[dict[str, Any]]:
+    """把單列 ERP 回應正規化為 {wbs_code, actual_cost, percent_complete}。
+
+    - 缺 wbs_code -> 回 None (整列略過)。
+    - actual_cost 轉 float，無法解析 -> 0.0 (記錄成本缺漏比中斷拉取好)。
+    - percent_complete 轉 int 並夾在 [0,100]，缺值 / 無法解析 -> None
+      (None 代表「ERP 未提供」，呼叫端不應覆寫既有完成度)。
+    """
+    wbs = next((row[k] for k in wbs_keys if row.get(k) not in (None, "")), None)
+    if wbs is None:
+        return None
+
+    cost_raw = next((row[k] for k in cost_keys if row.get(k) is not None), 0)
+    try:
+        actual_cost = float(cost_raw or 0)
+    except (TypeError, ValueError):
+        actual_cost = 0.0
+
+    pct_raw = next((row[k] for k in pct_keys if row.get(k) is not None), None)
+    percent_complete: Optional[int] = None
+    if pct_raw is not None:
+        try:
+            percent_complete = max(0, min(100, int(round(float(pct_raw)))))
+        except (TypeError, ValueError):
+            percent_complete = None
+
+    return {
+        "wbs_code": str(wbs),
+        "actual_cost": actual_cost,
+        "percent_complete": percent_complete,
+    }
+
+
 class SapAdapter(ErpAdapter):
     """SAP (PS 模組) Adapter。
 
@@ -101,6 +169,31 @@ class SapAdapter(ErpAdapter):
                 return str(val)
         return super().extract_erp_ref(body)
 
+    async def fetch_actuals(self, wbs_codes: list[str]) -> list[dict[str, Any]]:
+        """自 SAP (PS/CO 模組) 拉回實際成本 —— 鏡射推送的欄位語彙。
+
+        GET {api_endpoint}/actuals?WBS_ELEMENTS=a,b,c (Bearer Token 認證)；
+        回應列欄位：WBS_ELEMENT / ACTUAL_COST / PERCENT_COMPLETE (OData 容器亦支援)。
+        無 api_endpoint -> 模擬模式：記錄日誌並回傳 []。
+        """
+        if not self.api_endpoint:
+            logger.info("[ERP:SAP] 無 api_endpoint，跳過實際成本拉取 (simulate -> [])")
+            return []
+        body = await self._get_json(
+            self._actuals_url(), params={"WBS_ELEMENTS": ",".join(wbs_codes)}
+        )
+        out: list[dict[str, Any]] = []
+        for row in _rows_from_body(body):
+            item = _normalize_actual(
+                row,
+                wbs_keys=("WBS_ELEMENT", "wbs_code"),
+                cost_keys=("ACTUAL_COST", "ACT_COSTS", "actual_cost"),
+                pct_keys=("PERCENT_COMPLETE", "POC", "percent_complete"),
+            )
+            if item is not None:
+                out.append(item)
+        return out
+
 
 class DingxinAdapter(ErpAdapter):
     """鼎新 (DINGXIN_TW) Adapter — 台灣常見 ERP。
@@ -152,6 +245,33 @@ class DingxinAdapter(ErpAdapter):
             if val not in (None, ""):
                 return str(val)
         return super().extract_erp_ref(body)
+
+    async def fetch_actuals(self, wbs_codes: list[str]) -> list[dict[str, Any]]:
+        """自鼎新拉回實際成本 —— 鏡射推送的中文欄位語彙。
+
+        GET {api_endpoint}/actuals?WBS編碼=a,b,c (X-Api-Key 認證)；
+        回應列欄位：WBS編碼 / 實際成本 / 完成百分比 (容器「明細」亦支援)。
+        無 api_endpoint -> 模擬模式：記錄日誌並回傳 []。
+        """
+        if not self.api_endpoint:
+            logger.info(
+                "[ERP:DINGXIN_TW] 無 api_endpoint，跳過實際成本拉取 (simulate -> [])"
+            )
+            return []
+        body = await self._get_json(
+            self._actuals_url(), params={"WBS編碼": ",".join(wbs_codes)}
+        )
+        out: list[dict[str, Any]] = []
+        for row in _rows_from_body(body, "明細"):
+            item = _normalize_actual(
+                row,
+                wbs_keys=("WBS編碼", "wbs_code"),
+                cost_keys=("實際成本", "actual_cost"),
+                pct_keys=("完成百分比", "percent_complete"),
+            )
+            if item is not None:
+                out.append(item)
+        return out
 
 
 class YonyouAdapter(ErpAdapter):
@@ -207,6 +327,33 @@ class YonyouAdapter(ErpAdapter):
                 return str(val)
         return super().extract_erp_ref(body)
 
+    async def fetch_actuals(self, wbs_codes: list[str]) -> list[dict[str, Any]]:
+        """自用友 (NC/U8 風格) 拉回實際成本 —— 鏡射推送的 nc 欄位語彙。
+
+        GET {api_endpoint}/actuals?wbs_codes=a,b,c (access_token 標頭認證)；
+        回應列欄位：wbs_code / actual_cost / complete_percent (容器 data 亦支援)。
+        無 api_endpoint -> 模擬模式：記錄日誌並回傳 []。
+        """
+        if not self.api_endpoint:
+            logger.info(
+                "[ERP:YONYOU_CN] 無 api_endpoint，跳過實際成本拉取 (simulate -> [])"
+            )
+            return []
+        body = await self._get_json(
+            self._actuals_url(), params={"wbs_codes": ",".join(wbs_codes)}
+        )
+        out: list[dict[str, Any]] = []
+        for row in _rows_from_body(body):
+            item = _normalize_actual(
+                row,
+                wbs_keys=("wbs_code", "WBS_CODE"),
+                cost_keys=("actual_cost", "act_cost"),
+                pct_keys=("complete_percent", "percent_complete", "finish_rate"),
+            )
+            if item is not None:
+                out.append(item)
+        return out
+
 
 class SimulateAdapter(ErpAdapter):
     """模擬 Adapter — 未知 / 未設定 ERP 類型時的安全回退。
@@ -216,6 +363,17 @@ class SimulateAdapter(ErpAdapter):
     """
 
     erp_type = "SIMULATE"
+
+    async def fetch_actuals(self, wbs_codes: list[str]) -> list[dict[str, Any]]:
+        """模擬 Adapter 無真實 ERP 可查 —— 記錄日誌並回傳空清單。
+
+        (亦涵蓋「未知 erp_type 卻設定了 api_endpoint」的誤設情境：
+        寧可安全 no-op，也不對未知端點發出請求。)
+        """
+        logger.info(
+            "[ERP:SIMULATE] fetch_actuals 模擬模式 (wbs=%d 筆) -> []", len(wbs_codes)
+        )
+        return []
 
     def translate(self, canonical: CanonicalSyncItem) -> dict[str, Any]:
         return {

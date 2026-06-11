@@ -17,6 +17,7 @@ from app.core import audit
 from app.deps import verify_tenant, get_db, TenantContext, require_role
 from app.models.orm import Task, TaskDependency
 from app.schemas.schedule import (
+    DependencyLink,
     TaskCreate,
     TaskUpdate,
     TaskDurationUpdate,
@@ -25,6 +26,8 @@ from app.schemas.schedule import (
 )
 from app.routers.projects import (
     recompute_project,
+    version_conflict_response,
+    _dependency_maps,
     _get_project_or_404,
     _load_tasks,
     _load_dependencies,
@@ -63,24 +66,49 @@ async def _replace_predecessors(
     tenant_id: str,
     task_id: str,
     predecessors: list[str],
+    links: list[DependencyLink] | None = None,
 ) -> None:
-    """以新的前置任務清單覆寫指定任務的相依關係。"""
+    """以新的相依關係覆寫指定任務的前置設定。
+
+    FEAT-1：links 提供時以 links 為準（含 dep_type / lag_days；predecessors
+    參數被忽略）；links 為 None 時沿用 predecessors（視為傳統 FS + lag 0）。
+    """
     await db.execute(
         sa_delete(TaskDependency).where(
             TaskDependency.project_id == project_id,
             TaskDependency.task_id == task_id,
         )
     )
-    # 去重，避免違反 UNIQUE(project_id, task_id, predecessor_task_id)
-    for pred in dict.fromkeys(predecessors):
-        db.add(
-            TaskDependency(
-                project_id=project_id,
-                tenant_id=tenant_id,
-                task_id=task_id,
-                predecessor_task_id=pred,
+    if links is not None:
+        # 去重（以 predecessor_task_id），避免違反 UNIQUE 約束。
+        seen: set[str] = set()
+        for link in links:
+            if link.predecessor_task_id in seen:
+                continue
+            seen.add(link.predecessor_task_id)
+            db.add(
+                TaskDependency(
+                    project_id=project_id,
+                    tenant_id=tenant_id,
+                    task_id=task_id,
+                    predecessor_task_id=link.predecessor_task_id,
+                    dep_type=link.dep_type or "FS",
+                    lag_days=int(link.lag_days or 0),
+                )
             )
-        )
+    else:
+        # 去重，避免違反 UNIQUE(project_id, task_id, predecessor_task_id)
+        for pred in dict.fromkeys(predecessors):
+            db.add(
+                TaskDependency(
+                    project_id=project_id,
+                    tenant_id=tenant_id,
+                    task_id=task_id,
+                    predecessor_task_id=pred,
+                    dep_type="FS",
+                    lag_days=0,
+                )
+            )
     await db.flush()
 
 
@@ -98,9 +126,8 @@ async def list_tasks(
     tasks = await _load_tasks(db, project_id)
     deps = await _load_dependencies(db, project_id)
 
-    pred_map: dict[str, list[str]] = {}
-    for d in deps:
-        pred_map.setdefault(d.task_id, []).append(d.predecessor_task_id)
+    # FEAT-1：predecessors（向下相容）+ links（dep_type/lag_days）雙視圖。
+    pred_map, links_map = _dependency_maps(deps)
 
     # 嘗試以即時 CPM 結果回傳；資料異常則退回 DB 快取
     definitions = _build_task_definitions(tasks, deps)
@@ -117,6 +144,7 @@ async def list_tasks(
         if res is not None:
             res.task_name = t.task_name or ""
             res.predecessors = pred_map.get(t.task_id, [])
+            res.links = links_map.get(t.task_id, [])
             res.status = t.status or "PENDING"
             out.append(res)
         else:
@@ -126,6 +154,7 @@ async def list_tasks(
                     task_name=t.task_name or "",
                     duration=t.duration or 0,
                     predecessors=pred_map.get(t.task_id, []),
+                    links=links_map.get(t.task_id, []),
                     status=t.status or "PENDING",
                     es=t.es or 0,
                     ef=t.ef or 0,
@@ -150,8 +179,17 @@ async def add_task(
     db: AsyncSession = Depends(get_db),
     _role: None = Depends(require_role("editor")),
 ) -> ProjectOut:
-    """新增任務後重算整個專案 CPM。"""
+    """新增任務後重算整個專案 CPM。
+
+    FEAT-1：payload.links 提供時以 links 為準（predecessors 被忽略並重新推導）。
+    FEAT-3：payload.expected_version 提供且不符當前版本 -> 409 版本衝突。
+    """
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
+
+    # FEAT-3 樂觀併發：先檢查版本，衝突即不做任何寫入。
+    conflict = version_conflict_response(project, payload.expected_version)
+    if conflict is not None:
+        return conflict
 
     # 同專案內 task_id 不可重複
     existing = await db.execute(
@@ -178,7 +216,12 @@ async def add_task(
     )
     await db.flush()
 
-    if payload.predecessors:
+    if payload.links is not None:
+        # links 提供時為準（predecessors 被忽略）。
+        await _replace_predecessors(
+            db, project_id, ctx.tenant_id, payload.task_id, [], links=payload.links
+        )
+    elif payload.predecessors:
         await _replace_predecessors(
             db, project_id, ctx.tenant_id, payload.task_id, payload.predecessors
         )
@@ -196,6 +239,11 @@ async def add_task(
                 "task_id": payload.task_id,
                 "duration": payload.duration,
                 "predecessors": list(payload.predecessors or []),
+                "links": (
+                    [link.model_dump() for link in payload.links]
+                    if payload.links is not None
+                    else None
+                ),
             },
         )
     except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
@@ -213,8 +261,18 @@ async def update_task(
     db: AsyncSession = Depends(get_db),
     _role: None = Depends(require_role("editor")),
 ) -> ProjectOut:
-    """部分更新任務（名稱 / 工期 / 狀態 / 前置任務）後重算 CPM。"""
+    """部分更新任務（名稱 / 工期 / 狀態 / 前置任務 / 相依連結）後重算 CPM。
+
+    FEAT-1：payload.links 提供時以 links 為準（predecessors 被忽略並重新推導）。
+    FEAT-3：payload.expected_version 提供且不符當前版本 -> 409 版本衝突。
+    """
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
+
+    # FEAT-3 樂觀併發：先檢查版本，衝突即不做任何寫入。
+    conflict = version_conflict_response(project, payload.expected_version)
+    if conflict is not None:
+        return conflict
+
     task = await _get_task_or_404(db, project_id, task_id)
 
     changed: dict[str, object] = {}
@@ -229,7 +287,13 @@ async def update_task(
         changed["status"] = payload.status
     await db.flush()
 
-    if payload.predecessors is not None:
+    if payload.links is not None:
+        # links 提供時為準（predecessors 被忽略並由 links 重新推導）。
+        await _replace_predecessors(
+            db, project_id, ctx.tenant_id, task_id, [], links=payload.links
+        )
+        changed["links"] = [link.model_dump() for link in payload.links]
+    elif payload.predecessors is not None:
         await _replace_predecessors(
             db, project_id, ctx.tenant_id, task_id, payload.predecessors
         )
@@ -260,8 +324,17 @@ async def update_task_duration(
     db: AsyncSession = Depends(get_db),
     _role: None = Depends(require_role("editor")),
 ) -> ProjectOut:
-    """拖曳改工期路徑：更新工期後重算整個專案 CPM 並回傳最新 ProjectOut。"""
+    """拖曳改工期路徑：更新工期後重算整個專案 CPM 並回傳最新 ProjectOut。
+
+    FEAT-3：payload.expected_version 提供且不符當前版本 -> 409 版本衝突。
+    """
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
+
+    # FEAT-3 樂觀併發：先檢查版本，衝突即不做任何寫入。
+    conflict = version_conflict_response(project, payload.expected_version)
+    if conflict is not None:
+        return conflict
+
     task = await _get_task_or_404(db, project_id, task_id)
 
     old_duration = task.duration

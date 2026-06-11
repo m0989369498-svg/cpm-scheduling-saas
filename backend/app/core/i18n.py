@@ -54,6 +54,9 @@ I18N: dict[str, dict] = {
         "eac": "完工估算 (EAC)",
         "scheduleVariance": "進度差異 (SV)",
         "costVariance": "成本差異 (CV)",
+        # Batch 3 — 真實日期（FEAT-2；用於 Excel / PDF 匯出的日期欄位）
+        "plannedStart": "計畫開工",
+        "plannedFinish": "計畫完工",
         "statuses": {
             "PENDING": "待辦",
             "IN_PROGRESS": "進行中",
@@ -97,6 +100,9 @@ I18N: dict[str, dict] = {
         "eac": "完工估算 (EAC)",
         "scheduleVariance": "进度偏差 (SV)",
         "costVariance": "成本偏差 (CV)",
+        # Batch 3 — 真实日期（FEAT-2；用于 Excel / PDF 导出的日期列）
+        "plannedStart": "计划开工",
+        "plannedFinish": "计划完工",
         "statuses": {
             "PENDING": "待办",
             "IN_PROGRESS": "进行中",

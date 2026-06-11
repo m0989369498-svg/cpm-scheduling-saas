@@ -116,6 +116,25 @@ def _fmt_num(value: float | None, digits: int = 2) -> str:
     return f"{value:,.{digits}f}"
 
 
+def _planned_dates(
+    project_out: ProjectOut, es: int, ef: int
+) -> tuple[str | None, str | None]:
+    """Batch 3 (FEAT-2)：由 day_dates 取任務的計畫開工 / 完工 ISO 日期。
+
+    與 ERP payload 同一慣例：開工 = 第 es 個工作天、完工 = 第 ef-1 個工作天
+    (最後一個施作日)；零工期 (里程碑) 以開工日為完工日。day_dates 未提供
+    (專案無 start_date) 或索引越界時回 (None, None) —— 呼叫端據此省略欄位。
+    """
+    dd = project_out.day_dates
+    if not dd:
+        return None, None
+    start_idx = max(int(es or 0), 0)
+    finish_idx = max(int(ef or 0) - 1, start_idx)
+    if start_idx >= len(dd) or finish_idx >= len(dd):
+        return None, None
+    return dd[start_idx], dd[finish_idx]
+
+
 # ---------------------------------------------------------------------------
 # Excel (openpyxl)
 # ---------------------------------------------------------------------------
@@ -137,6 +156,9 @@ def _build_xlsx(
     prog_by_task = {r.task_id: r for r in progress_rows}
     evm_by_task = {b.task_id: b for b in (evm.per_task if evm else [])}
 
+    # Batch 3 (FEAT-2)：專案有開工日期 (day_dates) 時加入 開工/完工 日期欄。
+    has_dates = bool(project_out.day_dates)
+
     wb = Workbook()
 
     # ---- Tasks 工作表 ----
@@ -157,6 +179,9 @@ def _build_xlsx(
         "EV",
         "AC",
     ]
+    if has_dates:
+        # 置於 ef 之後、ls 之前以外的尾端 —— 追加欄位不打亂既有欄序 (向下相容)。
+        headers = headers + ["開工", "完工"]
     ws.append(headers)
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill("solid", fgColor="2C3E50")
@@ -186,23 +211,28 @@ def _build_xlsx(
             ev_val = None
             ac_val = None
 
-        ws.append(
-            [
-                tid,
-                task.task_name or "",
-                int(task.duration or 0),
-                int(task.es or 0),
-                int(task.ef or 0),
-                int(task.ls or 0),
-                int(task.lf or 0),
-                int(task.float_time or 0),
-                "YES" if task.is_critical else "",
-                percent_complete,
-                budget,
-                ev_val if ev_val is not None else "",
-                ac_val if ac_val is not None else "",
-            ]
-        )
+        row = [
+            tid,
+            task.task_name or "",
+            int(task.duration or 0),
+            int(task.es or 0),
+            int(task.ef or 0),
+            int(task.ls or 0),
+            int(task.lf or 0),
+            int(task.float_time or 0),
+            "YES" if task.is_critical else "",
+            percent_complete,
+            budget,
+            ev_val if ev_val is not None else "",
+            ac_val if ac_val is not None else "",
+        ]
+        if has_dates:
+            # Batch 3 (FEAT-2)：開工 = day_dates[es]、完工 = day_dates[ef-1]。
+            start_iso, finish_iso = _planned_dates(
+                project_out, int(task.es or 0), int(task.ef or 0)
+            )
+            row += [start_iso or "", finish_iso or ""]
+        ws.append(row)
 
     # 高亮要徑列 (紅底白字)。
     crit_fill = PatternFill("solid", fgColor="E74C3C")
@@ -335,6 +365,8 @@ def _build_pdf(
     story.append(Spacer(1, 6 * mm))
 
     # ---- 排程任務表 ----
+    # Batch 3 (FEAT-2)：專案有開工日期 (day_dates) 時加入 計畫開工/完工 日期欄。
+    has_dates = bool(project_out.day_dates)
     header = [
         Paragraph(t(region, "taskId"), cell_style),
         Paragraph(t(region, "taskName"), cell_style),
@@ -346,27 +378,47 @@ def _build_pdf(
         Paragraph(t(region, "floatTime"), cell_style),
         Paragraph(t(region, "critical"), cell_style),
     ]
+    if has_dates:
+        header += [
+            Paragraph(t(region, "plannedStart"), cell_style),
+            Paragraph(t(region, "plannedFinish"), cell_style),
+        ]
     rows: list[list] = [header]
     critical_row_indexes: list[int] = []
     for idx, task in enumerate(project_out.tasks, start=1):
         if task.is_critical:
             critical_row_indexes.append(idx)
-        rows.append(
-            [
-                Paragraph(str(task.task_id), cell_style),
-                Paragraph(str(task.task_name or ""), cell_style),
-                Paragraph(str(int(task.duration or 0)), cell_style),
-                Paragraph(str(int(task.es or 0)), cell_style),
-                Paragraph(str(int(task.ef or 0)), cell_style),
-                Paragraph(str(int(task.ls or 0)), cell_style),
-                Paragraph(str(int(task.lf or 0)), cell_style),
-                Paragraph(str(int(task.float_time or 0)), cell_style),
-                Paragraph("🔥" if task.is_critical else "-", cell_style),
+        row = [
+            Paragraph(str(task.task_id), cell_style),
+            Paragraph(str(task.task_name or ""), cell_style),
+            Paragraph(str(int(task.duration or 0)), cell_style),
+            Paragraph(str(int(task.es or 0)), cell_style),
+            Paragraph(str(int(task.ef or 0)), cell_style),
+            Paragraph(str(int(task.ls or 0)), cell_style),
+            Paragraph(str(int(task.lf or 0)), cell_style),
+            Paragraph(str(int(task.float_time or 0)), cell_style),
+            Paragraph("🔥" if task.is_critical else "-", cell_style),
+        ]
+        if has_dates:
+            start_iso, finish_iso = _planned_dates(
+                project_out, int(task.es or 0), int(task.ef or 0)
+            )
+            row += [
+                Paragraph(start_iso or "-", cell_style),
+                Paragraph(finish_iso or "-", cell_style),
             ]
-        )
-    col_widths = [
-        20 * mm, 44 * mm, 16 * mm, 14 * mm, 14 * mm, 14 * mm, 14 * mm, 20 * mm, 18 * mm,
-    ]
+        rows.append(row)
+    if has_dates:
+        # 日期雙欄需要寬度 —— 壓縮名稱欄與數值欄，總寬維持在版心內。
+        col_widths = [
+            18 * mm, 30 * mm, 12 * mm, 10 * mm, 10 * mm, 10 * mm, 10 * mm,
+            14 * mm, 12 * mm, 25 * mm, 25 * mm,
+        ]
+    else:
+        col_widths = [
+            20 * mm, 44 * mm, 16 * mm, 14 * mm, 14 * mm, 14 * mm, 14 * mm,
+            20 * mm, 18 * mm,
+        ]
     table = Table(rows, colWidths=col_widths, repeatRows=1)
     style_cmds = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),

@@ -10,7 +10,7 @@ duration / status / 日期)，絕不讓任何一家 ERP 的欄位命名 (SAP 的
 公開 API：
     CanonicalSyncItem  : 內部正規同步單元 (Pydantic model)
     ErpPushResult      : push() 的標準回傳結果
-    ErpAdapter         : 抽象基底，定義 translate() 與 push()
+    ErpAdapter         : 抽象基底，定義 translate() / push() / fetch_actuals()
 """
 
 from __future__ import annotations
@@ -273,3 +273,62 @@ class ErpAdapter:
         """
         payload = self.translate(canonical)
         return await self.push(payload)
+
+    # ------------------------------------------------------------------ #
+    # 入站：自 ERP 拉回實際成本 (inbound cost pull, Batch 3 FEAT-5)
+    # ------------------------------------------------------------------ #
+    async def fetch_actuals(self, wbs_codes: list[str]) -> list[dict[str, Any]]:
+        """自 ERP 拉回各 WBS 的「實際成本 / 完成度」(inbound cost pull)。
+
+        參數：
+            wbs_codes : 欲查詢的 ERP WBS 編碼清單 (來自 task_mapping.erp_wbs_code)。
+
+        回傳「正規化」清單，每筆形如::
+
+            {"wbs_code": str, "actual_cost": float, "percent_complete": int | None}
+
+        基底「不」實作 (反腐層原則：各家 ERP 的查詢路徑 / 認證 / 欄位命名差異
+        必須封裝在子類別中)。子類別 (SAP / 鼎新 / 用友) 各自以認證 httpx GET
+        實作；``api_endpoint`` 為空時應回傳 [] (模擬模式，僅記錄日誌)。
+        """
+        raise NotImplementedError("子類別必須實作 fetch_actuals()")
+
+    def _actuals_url(self, path: str = "/actuals") -> str:
+        """組出實際成本查詢端點 URL：api_endpoint + path (預設 '/actuals')。"""
+        return self.api_endpoint.rstrip("/") + path
+
+    async def _get_json(self, url: str, params: dict[str, Any]) -> Any:
+        """共用：以 httpx 認證 GET 並解析 JSON (供子類別 fetch_actuals 使用)。
+
+        - 帶上子類別 :meth:`build_headers` 的認證標頭，connect / read 分別設限。
+        - transport 失敗或非 2xx -> 拋出 :class:`ErpPushError` (訊息清楚可診斷)；
+          worker 的 pull job 會攔截並寫入 sync_event_log (status='FAILED')。
+        - 成功 -> 回傳解析後的 JSON body (dict / list；非 JSON 時包成 {"text": ...})。
+        """
+        timeout = httpx.Timeout(
+            self.read_timeout,
+            connect=self.connect_timeout,
+            read=self.read_timeout,
+        )
+        headers = self.build_headers()
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.get(url, params=params, headers=headers)
+        except httpx.HTTPError as exc:
+            msg = f"[ERP:{self.erp_type}] actuals GET transport 失敗 url={url} err={exc}"
+            logger.warning(msg)
+            raise ErpPushError(msg, erp_type=self.erp_type) from exc
+
+        try:
+            body = resp.json()
+        except Exception:  # noqa: BLE001 - ERP 可能回非 JSON
+            body = {"text": resp.text}
+
+        if not resp.is_success:
+            msg = (
+                f"[ERP:{self.erp_type}] actuals GET 失敗 status={resp.status_code} "
+                f"url={url} body={body}"
+            )
+            logger.warning(msg)
+            raise ErpPushError(msg, erp_type=self.erp_type, status_code=resp.status_code)
+        return body
