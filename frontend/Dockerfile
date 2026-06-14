@@ -18,6 +18,10 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 # 複製原始碼並建置
 COPY . .
+# 體驗版登入預填：build 時把 VITE_DEMO_LOGIN baked 進前端 (Login 會預填 demo 帳密)。
+# 正式環境用 --build-arg VITE_DEMO_LOGIN=0 (或 compose 的 VITE_DEMO_LOGIN=0) 關閉。
+ARG VITE_DEMO_LOGIN=1
+ENV VITE_DEMO_LOGIN=$VITE_DEMO_LOGIN
 RUN npm run build
 
 # ---- Stage 2: serve ---------------------------------------------------------

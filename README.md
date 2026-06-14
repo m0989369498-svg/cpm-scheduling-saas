@@ -1,5 +1,12 @@
 # 企業級工程排程與自動化 SaaS (CPM / Critical Path)
 
+[![CI](https://github.com/m0989369498-svg/cpm-scheduling-saas/actions/workflows/ci.yml/badge.svg)](https://github.com/m0989369498-svg/cpm-scheduling-saas/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![React 18](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
+![PostgreSQL 15](https://img.shields.io/badge/PostgreSQL-15-4169E1?logo=postgresql&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)
+
 > Enterprise engineering scheduling & automation SaaS for construction firms and engineering
 > consultancies. Cross-strait (TW / CN) **multi-tenant** platform built around the
 > **Critical Path Method (CPM / 要徑法 / 關鍵路徑法)**.
@@ -8,6 +15,50 @@ A drag-to-recalculate scheduling board (Gantt) backed by a pure-Python CPM engin
 multi-tenant isolation via PostgreSQL **Row-Level Security (RLS)**, a pluggable **ERP
 Anti-Corruption Layer (ACL)** (SAP / 鼎新 DINGXIN / 用友 YONYOU), PDF report generation, and
 region-aware notifications (LINE for TW, DingTalk/釘釘 for CN).
+
+---
+
+## ✨ Features
+
+- **CPM engine** (pure Python) — forward/backward pass, ES/EF/LS/LF, float & critical path,
+  cycle detection. Supports **FS / SS / FF / SF** dependency types with **lag/lead** days.
+- **Interactive Gantt** — drag-to-recalculate durations, dependency arrows, real calendar
+  dates with a working-day calendar (weekends + holidays), planned-vs-actual overlay.
+- **Resource leveling** (heuristic) — detects per-day resource over-capacity and shifts
+  non-critical tasks; **Monte Carlo PERT** risk analysis — completion S-curve + criticality index.
+- **Earned Value Management** — baselines, PV/EV/AC, SPI/CPI/EAC/VAC, with auto schedule/cost
+  overrun alerts.
+- **Multi-project dashboard** + **Excel / PDF export**.
+- **Multi-tenant** isolation via PostgreSQL **Row-Level Security**; **JWT auth** + **RBAC**
+  (admin / editor / viewer) + audit log; soft-delete recycle bin; optimistic concurrency.
+- **ERP Anti-Corruption Layer** (SAP / 鼎新 DINGXIN / 用友 YONYOU) — push + cost pull, async
+  worker with retry / dead-letter; region-aware notifications (LINE / 釘釘 / 企業微信).
+- **Cross-strait i18n** — 繁中 (TW) / 简中 (CN) throughout.
+- **Batteries included** — Docker compose one-command stack, Alembic migrations, and a
+  GitHub Actions CI (backend pytest + real-Postgres RLS · Vite build + vitest · compose e2e).
+
+## 🚀 Try it in 30 seconds
+
+> Open-source **MIT** demo. Clone and one command brings up the whole stack locally.
+
+```bash
+git clone https://github.com/m0989369498-svg/cpm-scheduling-saas.git
+cd cpm-scheduling-saas
+cp .env.example .env
+docker compose up --build
+# open http://localhost:8080  → login is pre-filled (demo build)
+```
+
+**Demo accounts** (password `demo1234` for all):
+
+| Username   | Role   | Tenant / Region   |
+|------------|--------|-------------------|
+| `admin@tw`  | admin  | `TENT-9981` / TW   |
+| `editor@tw` | editor | `TENT-9981` / TW   |
+| `viewer@tw` | viewer | `TENT-9981` / TW   |
+| `admin@cn`  | admin  | `TENT-CN-002` / CN |
+
+> No Docker? See **§4a** for the pure-Python **SQLite dev mode** (great on Windows-ARM64).
 
 ---
 
@@ -167,10 +218,15 @@ Vite dev server 於 <http://localhost:5173>。預設租戶 `TENT-9981` / `TW`，
 
 **Demo 帳號** (密碼皆為 `demo1234`，由 App 啟動時以 passlib 種子建立)：
 
-| Username  | Tenant       | Region |
-|-----------|--------------|--------|
-| `admin@tw` | `TENT-9981`   | `TW`   |
-| `admin@cn` | `TENT-CN-002` | `CN`   |
+| Username   | Role   | Tenant       | Region |
+|------------|--------|--------------|--------|
+| `admin@tw`  | admin  | `TENT-9981`   | `TW`   |
+| `editor@tw` | editor | `TENT-9981`   | `TW`   |
+| `viewer@tw` | viewer | `TENT-9981`   | `TW`   |
+| `admin@cn`  | admin  | `TENT-CN-002` | `CN`   |
+
+> In the demo build (`VITE_DEMO_LOGIN=1`) the login form is **pre-filled** with `admin@tw`.
+> RBAC: `viewer` is read-only, `editor` can edit schedule data, `admin` also manages users.
 
 **取得 token** — `POST {API_V1_PREFIX}/auth/login`：
 
@@ -442,7 +498,7 @@ pytest
 ### 10.1 CI (GitHub Actions)
 
 A GitHub Actions pipeline runs on every push / pull request (on `ubuntu-latest`, Python 3.11
-and Node 20 — Linux has prebuilt wheels for `asyncpg` / `httptools` / `reportlab`). It has
+and Node 24 — Linux has prebuilt wheels for `asyncpg` / `httptools` / `reportlab`). It has
 three parts:
 
 - **Backend tests** — spins up **PostgreSQL** and **Redis** as service containers (the DB is
@@ -472,8 +528,18 @@ docker-compose.yml, .env.example, .gitignore, README.md
 
 ---
 
-## 12. License & Notes
+## 12. License
 
-Internal/demo project. External ERP and notification integrations **mock the network when
-credentials are absent** (empty token/endpoint ⇒ log + simulated success), so the full stack
-runs end-to-end out of the box.
+Released under the **MIT License** — see [LICENSE](LICENSE). Free to use, modify, and
+distribute (including commercially); just keep the copyright notice. Contributions welcome —
+see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+This is a **demo / showcase** build: external ERP and notification integrations **mock the
+network when credentials are absent** (empty token/endpoint ⇒ log + simulated success), so
+the full stack runs end-to-end out of the box.
+
+> ⚠️ **Not production-hardened out of the box.** The shipped `.env.example` is tuned for a
+> friction-free demo (`DEV_BOOTSTRAP=true` seeds demo tenants/users, `VITE_DEMO_LOGIN=1`
+> pre-fills the login). For real deployments: set `DEV_BOOTSTRAP=false`, provide
+> `INITIAL_ADMIN_*`, a strong random `JWT_SECRET`, real DB passwords, `VITE_DEMO_LOGIN=0`,
+> and terminate **TLS** at the gateway (§4 TLS / 上線).

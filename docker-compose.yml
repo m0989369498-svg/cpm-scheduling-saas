@@ -157,6 +157,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # 體驗版：預填 demo 登入帳密 (VITE_DEMO_LOGIN=1)。正式環境於 .env 設 0。
+        VITE_DEMO_LOGIN: "${VITE_DEMO_LOGIN:-1}"
     container_name: cpm_frontend
     restart: unless-stopped
     expose:
