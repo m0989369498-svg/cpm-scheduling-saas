@@ -393,4 +393,39 @@ export async function deleteBaseline(projectId, baselineId) {
   return res.data
 }
 
+// ---- Pro Batch A：P6 XER + MS Project MSPDI XML 匯入/匯出 ----
+
+// 匯入專案（P6 .xer 或 MS Project MSPDI .xml）：以 multipart/form-data 上傳檔案，
+// 後端解析後以既有建立專案流程落地（新專案 + WBS + 任務 + 依賴 + 限制條件）。
+// opts: { format？: 'auto'|'xer'|'mspdi'（預設 auto，由副檔名/內容判斷）,
+//         hoursPerDay？: number（預設 8）, projectId？: string（未提供由後端產生） }
+// 回傳 {project: ProjectOut, report:{format, tasks, wbs, links, constraints, warnings}}
+export async function importProject(file, opts = {}) {
+  const form = new FormData()
+  form.append('file', file)
+  if (opts.format) form.append('format', opts.format)
+  if (opts.hoursPerDay != null) form.append('hours_per_day', String(opts.hoursPerDay))
+  if (opts.projectId) form.append('project_id', opts.projectId)
+  // 注意：apiClient 實例預設 headers['Content-Type']='application/json'；若不覆寫，
+  // axios 在送出前會誤判為 JSON 內容並將 FormData 序列化掉（檔案遺失）。
+  // 明確清除該欄位（而非手動指定 multipart 字串），讓 axios/瀏覽器依 FormData
+  // 自動產生帶正確 boundary 的 multipart/form-data 標頭。
+  const res = await apiClient.post('/projects/import', form, {
+    headers: { 'Content-Type': undefined },
+  })
+  return res.data
+}
+
+// P6 XER 匯出 URL（GET 檔案下載；需以 Authorization 標頭驗證後以 blob 觸發下載，同 exportXlsxUrl 模式）
+export function exportXerUrl(projectId) {
+  const base = API_BASE_URL.replace(/\/$/, '')
+  return `${base}/projects/${encodeURIComponent(projectId)}/export.xer`
+}
+
+// MS Project MSPDI XML 匯出 URL（GET 檔案下載；同上）
+export function exportMspdiUrl(projectId) {
+  const base = API_BASE_URL.replace(/\/$/, '')
+  return `${base}/projects/${encodeURIComponent(projectId)}/export.mspdi.xml`
+}
+
 export default apiClient

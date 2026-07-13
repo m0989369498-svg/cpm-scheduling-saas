@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-__all__ = ["offset_to_date", "day_dates"]
+__all__ = ["offset_to_date", "day_dates", "date_to_offset"]
 
 
 def _normalize_work_days(work_days: str) -> str:
@@ -78,3 +78,35 @@ def offset_to_date(
     負偏移以 0 視之 (CPM 的 es/ef 皆 >= 0；防衛性處理)。
     """
     return day_dates(start_date, max(0, int(offset)), work_days, holidays)[-1]
+
+
+def date_to_offset(
+    start_date: date,
+    target_date: date,
+    work_days: str,
+    holidays: set[date] | None = None,
+) -> int:
+    """offset_to_date 的反函式：回傳 target_date 對應的日偏移 (day offset)。
+
+    語義 (與 offset_to_date 精確互逆)：
+      * target_date <= start_date 時夾在 0 (clamp below start to 0)。
+      * target_date 落在非工作日 (週末 / 例外假日) 時，視同其後第一個工作日
+        (use the NEXT working day)：回傳該工作日的 offset。
+      * 對任意 k >= 0，date_to_offset(s, offset_to_date(s, k, wd, hol), wd, hol) == k
+        (精確互逆 / exact inverse)。
+
+    採用與 day_dates 相同的線性掃描策略 (逐日前進)，避免與其語義出現偏差。
+    """
+    hset = holidays or set()
+    mask = _normalize_work_days(work_days)
+    if target_date <= start_date:
+        return 0
+
+    offset = -1
+    d = start_date
+    while True:
+        if _is_workday(d, mask, hset):
+            offset += 1
+            if d >= target_date:
+                return offset
+        d += timedelta(days=1)

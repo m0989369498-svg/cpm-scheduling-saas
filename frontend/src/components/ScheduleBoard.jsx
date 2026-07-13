@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useScheduleStore, isLoading, getError } from '../store/scheduleStore';
 import { t } from '../i18n';
-import { reportUrl, exportXlsxUrl, exportPdfUrl } from '../api/client';
+import { reportUrl, exportXlsxUrl, exportPdfUrl, exportXerUrl, exportMspdiUrl } from '../api/client';
 import GanttChart from './GanttChart';
 import ProjectForm from './ProjectForm';
 import ResourcePanel from './ResourcePanel';
@@ -89,6 +89,7 @@ export default function ScheduleBoard() {
     baseline,
     progress,
     wbs,
+    importReport,
     setTenant,
     setRegion,
     loadProjects,
@@ -103,6 +104,8 @@ export default function ScheduleBoard() {
     loadWbs,
     updateTaskLinks,
     clearError,
+    importProject,
+    clearImportReport,
   } = store;
 
   // Batch 4：scoped 載入/錯誤 — 全域頂部狀態列僅顯示 project/projects scope；
@@ -112,6 +115,9 @@ export default function ScheduleBoard() {
   const boardError = getError(store, 'project') || getError(store, 'projects');
   const mutationBusy = isLoading(store, 'mutation');
   const mutationError = getError(store, 'mutation');
+  // Pro Batch A：P6/MSPDI 匯入 scope（獨立於 mutation，避免與工期/依賴編輯的忙碌提示混雜）
+  const importBusy = isLoading(store, 'import');
+  const importError = getError(store, 'import');
 
   // 寫入權限：editor 以上可寫；viewer 僅讀（隱藏所有寫入動作）。
   // 角色缺失（舊權杖/標頭模式）視為 admin（與後端預設一致），維持向後相容。
@@ -139,6 +145,10 @@ export default function ScheduleBoard() {
   const [depEdit, setDepEdit] = useState(null);
   // Pro Batch B Feature 1：已收合的 WBS 群組（任務表格）；存 wbs_code 集合
   const [collapsedWbs, setCollapsedWbs] = useState(() => new Set());
+  // Pro Batch A：隱藏檔案輸入框 ref（匯入 P6 .xer / MS Project .xml）
+  const importInputRef = useRef(null);
+  // Pro Batch A：匯入報告橫幅是否已由使用者關閉（每次收到新報告時重新顯示）
+  const [importReportDismissed, setImportReportDismissed] = useState(false);
 
   // 掛載時載入專案清單
   useEffect(() => {
@@ -150,6 +160,11 @@ export default function ScheduleBoard() {
   useEffect(() => {
     setTenantInput(tenantId || '');
   }, [tenantId]);
+
+  // Pro Batch A：每次收到新的匯入報告時重新顯示橫幅（可再次被關閉）
+  useEffect(() => {
+    if (importReport) setImportReportDismissed(false);
+  }, [importReport]);
 
   // currentProject 變更時，重置工期草稿為後端回傳值
   useEffect(() => {
@@ -439,6 +454,43 @@ export default function ScheduleBoard() {
     }
   };
 
+  // Pro Batch A：P6 XER 匯出（同 Excel/PDF，Bearer 驗證下載）
+  const handleExportXer = () => {
+    if (currentProject?.project_id) {
+      downloadWithAuth(exportXerUrl(currentProject.project_id), `${currentProject.project_id}.xer`);
+    }
+  };
+
+  // Pro Batch A：MS Project MSPDI XML 匯出
+  const handleExportMspdi = () => {
+    if (currentProject?.project_id) {
+      downloadWithAuth(
+        exportMspdiUrl(currentProject.project_id),
+        `${currentProject.project_id}.mspdi.xml`,
+      );
+    }
+  };
+
+  // Pro Batch A：匯入按鈕 -> 觸發隱藏的 <input type="file"> 選檔對話框
+  const handleImportClick = () => {
+    clearError('import');
+    if (importInputRef.current) importInputRef.current.click();
+  };
+
+  // Pro Batch A：選檔後即上傳（format 交由後端自動判斷副檔名/內容）；
+  // 完成或失敗後重置 input value，讓使用者可重新選取同一檔案再次匯入。
+  const handleImportFileChange = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try {
+      await importProject(file, { format: 'auto' });
+    } catch (err) {
+      /* 錯誤已存於 errors.import */
+    } finally {
+      e.target.value = '';
+    }
+  };
+
   // ---- 樣式 ----
   const btnStyle = {
     padding: '6px 14px',
@@ -630,7 +682,81 @@ export default function ScheduleBoard() {
             </button>
           </div>
         )}
+
+        {/* Pro Batch A：匯入 P6 (.xer) / MS Project (.xml) -> 建立新專案（viewer 隱藏） */}
+        {canWrite && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <label style={{ fontSize: '12px', color: '#666' }}>&nbsp;</label>
+            <button
+              style={{ ...btnStyle, background: '#2980b9' }}
+              onClick={handleImportClick}
+              disabled={importBusy}
+            >
+              {importBusy ? `${t(region, 'loading')}…` : `⤒ ${t(region, 'importProject')}`}
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".xer,.xml"
+              style={{ display: 'none' }}
+              onChange={handleImportFileChange}
+            />
+          </div>
+        )}
       </div>
+
+      {/* ===== Pro Batch A：匯入報告橫幅（可關閉） ===== */}
+      {importReport && !importReportDismissed && (
+        <div
+          className="notice"
+          style={{
+            background: '#eafaf1',
+            border: '1px solid #a9dfbf',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+            <strong style={{ color: '#1e8449' }}>
+              {t(region, 'importReport')} ({String(importReport.format || '').toUpperCase()})
+            </strong>
+            <button
+              type="button"
+              className="secondary small"
+              onClick={() => {
+                setImportReportDismissed(true);
+                clearImportReport();
+              }}
+            >
+              {t(region, 'dismiss')}
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', fontSize: '13px', color: '#1e8449' }}>
+            <span>{t(region, 'importedTasks')}: {importReport.tasks ?? 0}</span>
+            <span>{t(region, 'importedWbs')}: {importReport.wbs ?? 0}</span>
+            <span>{t(region, 'importedLinks')}: {importReport.links ?? 0}</span>
+            <span>{t(region, 'importedConstraints')}: {importReport.constraints ?? 0}</span>
+          </div>
+          {Array.isArray(importReport.warnings) && importReport.warnings.length > 0 && (
+            <div style={{ fontSize: '12px', color: '#b9770e' }}>
+              <div style={{ fontWeight: 700 }}>
+                {t(region, 'importWarnings')} ({importReport.warnings.length})
+              </div>
+              <ul style={{ margin: '4px 0 0', paddingLeft: '18px' }}>
+                {importReport.warnings.map((w, i) => (
+                  <li key={i}>{String(w)}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+      {importError && (
+        <div className="notice error">
+          {t(region, 'error')}: {String(importError)}
+        </div>
+      )}
 
       {/* ===== 建立專案模態 ===== */}
       {showProjectForm && (
@@ -872,6 +998,13 @@ export default function ScheduleBoard() {
             </button>
             <button style={{ ...btnStyle, background: '#c0392b' }} onClick={handleExportPdf}>
               {t(region, 'exportPdf')}
+            </button>
+            {/* Pro Batch A：P6 XER / MS Project MSPDI XML 匯出（唯讀，viewer 亦可） */}
+            <button style={{ ...btnStyle, background: '#5d4037' }} onClick={handleExportXer}>
+              {t(region, 'exportXer')}
+            </button>
+            <button style={{ ...btnStyle, background: '#34495e' }} onClick={handleExportMspdi}>
+              {t(region, 'exportMspdi')}
             </button>
           </div>
 

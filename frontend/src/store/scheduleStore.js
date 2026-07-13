@@ -33,6 +33,8 @@ export const LOADING_SCOPES = [
   // ---- Pro Batch B：WBS 階層 + 多重命名基準線 ----
   'wbs',
   'baselines',
+  // ---- Pro Batch A：P6 XER + MS Project MSPDI XML 匯入 ----
+  'import',
 ]
 
 function readLS(key, fallback) {
@@ -119,6 +121,11 @@ export const useScheduleStore = create((set, get) => ({
   // baselines : list[{id,name,created_at,is_active,project_duration}]（基準線選單）
   wbs: [],
   baselines: [],
+
+  // ---- Pro Batch A：P6 XER + MS Project MSPDI XML 匯入 ----
+  // importReport : {format, tasks, wbs, links, constraints, warnings:[string]} | null
+  // 最近一次匯入的結果摘要，供 ScheduleBoard 顯示可關閉的報告橫幅/彈窗。
+  importReport: null,
 
   // ---- Batch 4：scoped loading/error 內部輔助 ----
 
@@ -221,6 +228,8 @@ export const useScheduleStore = create((set, get) => ({
       // 重置 Pro Batch B：WBS + 多重命名基準線
       wbs: [],
       baselines: [],
+      // 重置 Pro Batch A：匯入報告
+      importReport: null,
     })
   },
 
@@ -252,6 +261,8 @@ export const useScheduleStore = create((set, get) => ({
       // 切換租戶：清空 Pro Batch B WBS + 多重命名基準線（避免跨租戶殘留）
       wbs: [],
       baselines: [],
+      // 切換租戶：清空 Pro Batch A 匯入報告（避免跨租戶殘留）
+      importReport: null,
     })
   },
 
@@ -793,6 +804,50 @@ export const useScheduleStore = create((set, get) => ({
       throw err
     }
   },
+
+  // ---- Pro Batch A：P6 XER + MS Project MSPDI XML 匯入 ----
+
+  // 匯入專案檔案（P6 .xer 或 MS Project MSPDI .xml）：後端解析建檔（新專案 + WBS +
+  // 任務 + 依賴 + 限制條件）後回傳 {project, report}。成功後：
+  //   - 重置 Phase 8/9 分析狀態與 WBS/基準線（同 createProject，新專案不可沿用舊狀態）
+  //   - 設為當前專案（project）
+  //   - 將 report（counts + warnings）存入 store.importReport 供橫幅顯示
+  //   - 背景刷新專案清單（不阻塞）
+  // file  : File（<input type="file"> 選取）
+  // opts  : { format？: 'auto'|'xer'|'mspdi', hoursPerDay？: number, projectId？: string }
+  importProject: async (file, opts = {}) => {
+    set({
+      resources: null,
+      leveling: null,
+      risk: [],
+      simulation: null,
+      progress: [],
+      baseline: null,
+      evm: null,
+      dataDate: null,
+      wbs: [],
+      baselines: [],
+    })
+    get()._start('import')
+    try {
+      const result = await api.importProject(file, opts)
+      set({
+        currentProject: result.project,
+        importReport: result.report || null,
+      })
+      get()._ok('import')
+      get()
+        .loadProjects()
+        .catch(() => {})
+      return result
+    } catch (err) {
+      get()._fail('import', err)
+      throw err
+    }
+  },
+
+  // 關閉匯入報告橫幅（僅清除顯示用的 report，不影響 currentProject）
+  clearImportReport: () => set({ importReport: null }),
 
   // 計算 EVM（dataDate 選用，預設基準線總工期）；結果存入 store.evm，並記錄使用的 dataDate
   runEvm: async (dataDate) => {

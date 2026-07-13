@@ -902,6 +902,10 @@ for _mod_path, _label in (
     ("app.routers.dashboard", "dashboard"),
     ("app.routers.users", "users"),
     ("app.routers.exports", "exports"),
+    # Pro Batch A — P6 XER / MS Project MSPDI 匯入匯出 (interop)。以 best-effort
+    # 匯入掛載：app.interop.xer / app.interop.mspdi 為並行工作項建立的純函式
+    # 解析器/產生器；若於某中間狀態尚未就緒則記錄並略過 (不中斷啟動)。
+    ("app.routers.interop", "interop"),
 ):
     try:
         import importlib
