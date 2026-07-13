@@ -152,12 +152,16 @@ async def list_tasks(
                 predecessors=pred_map.get(t.task_id, []),
                 links=links_map.get(t.task_id, []),
                 status=t.status or "PENDING",
+                wbs_code=t.wbs_code,
+                constraint_type=t.constraint_type,
+                constraint_day=t.constraint_day,
                 es=t.es or 0,
                 ef=t.ef or 0,
                 ls=t.ls or 0,
                 lf=t.lf or 0,
                 float_time=t.float_time or 0,
                 is_critical=bool(t.is_critical),
+                constraint_violated=bool(t.constraint_violated),
             )
         )
     return out
@@ -208,6 +212,10 @@ async def add_task(
             task_name=payload.task_name or "",
             duration=payload.duration,
             status=payload.status or "PENDING",
+            # Batch 5：WBS 歸屬（選填、容許懸空）+ 活動限制（選填）。
+            wbs_code=payload.wbs_code,
+            constraint_type=payload.constraint_type,
+            constraint_day=payload.constraint_day,
         )
     )
     await db.flush()
@@ -240,6 +248,9 @@ async def add_task(
                     if payload.links is not None
                     else None
                 ),
+                "wbs_code": payload.wbs_code,
+                "constraint_type": payload.constraint_type,
+                "constraint_day": payload.constraint_day,
             },
         )
     except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
@@ -281,6 +292,21 @@ async def update_task(
     if payload.status is not None:
         task.status = payload.status
         changed["status"] = payload.status
+    # Batch 5 FEAT-1：WBS 歸屬。以 model_fields_set 區分「未提供」與「提供
+    # None」（同 ProjectUpdate.start_date 慣例），使前端可明確清空 wbs_code。
+    if "wbs_code" in payload.model_fields_set:
+        task.wbs_code = payload.wbs_code
+        changed["wbs_code"] = payload.wbs_code
+    # Batch 5 FEAT-2：活動限制。type/day 成對處理（任一提供即視為「本次要更新
+    # 限制」，兩者一併寫入；schema 層已驗證兩者須同時為 None 或同時提供）。
+    if (
+        "constraint_type" in payload.model_fields_set
+        or "constraint_day" in payload.model_fields_set
+    ):
+        task.constraint_type = payload.constraint_type
+        task.constraint_day = payload.constraint_day
+        changed["constraint_type"] = payload.constraint_type
+        changed["constraint_day"] = payload.constraint_day
     await db.flush()
 
     if payload.links is not None:

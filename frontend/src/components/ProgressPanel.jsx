@@ -9,7 +9,11 @@ import EvmChart from './EvmChart';
  * 功能：
  *   - 每任務進度編輯表：budget / percent_complete(0-100) / actual_cost /
  *       actual_start_day / actual_finish_day -> store.saveProgress(list)
- *   - 「建立基準線」按鈕 -> store.createBaseline(name?)（以目前 CPM + 進度預算為快照）
+ *   - 「建立基準線」按鈕（prompt 命名）-> store.createBaseline(name?)（以目前 CPM + 進度預算
+ *       為快照；後端將此新基準線設為使用中並清除其餘旗標）
+ *   - Pro Batch B Feature 3：基準線選擇器（下拉清單：名稱 + 日期，★ 標示使用中）+
+ *       「設為使用中」-> store.activateBaseline(id) / 「刪除」-> store.deleteBaseline(id)
+ *       （甘特圖計畫條 / EVM 一律依循「使用中」基準線，見 store.baseline）
  *   - 資料日 (data_date) 輸入 + 滑桿（0..基準線/專案總工期）
  *   - 「計算實獲值」-> store.runEvm(dataDate)
  *       渲染：EVM KPI 卡（SPI/CPI/SV/CV/EAC/VAC，紅 <0.9 或負值 / 綠）
@@ -17,7 +21,8 @@ import EvmChart from './EvmChart';
  *   - 「拋轉風險預警」-> store.dispatchEvmAlert(dataDate)（僅 risk_flagged 時啟用）
  *
  * 資料來源：
- *   store.progress（list[ProgressEntry]）、store.baseline（BaselineOut）、
+ *   store.progress（list[ProgressEntry]）、store.baseline（使用中基準線 BaselineOut）、
+ *   store.baselines（list[{id,name,created_at,is_active,project_duration}] 選單）、
  *   store.evm（EvmResult）、store.dataDate
  */
 
@@ -30,19 +35,24 @@ export default function ProgressPanel({ region = 'TW' }) {
     currentProject,
     progress,
     baseline,
+    baselines,
     evm,
     dataDate,
     loadProgress,
     saveProgress,
     createBaseline,
     loadBaseline,
+    loadBaselines,
+    activateBaseline,
+    deleteBaseline,
     runEvm,
     dispatchEvmAlert,
   } = store;
 
-  // Batch 4：本面板僅讀取 progress / evm scope 的載入與錯誤
-  const busy = isLoading(store, 'progress') || isLoading(store, 'evm');
-  const panelError = getError(store, 'progress') || getError(store, 'evm');
+  // Batch 4：本面板讀取 progress / evm / baselines(Pro Batch B) scope 的載入與錯誤
+  const busy = isLoading(store, 'progress') || isLoading(store, 'evm') || isLoading(store, 'baselines');
+  const panelError =
+    getError(store, 'progress') || getError(store, 'evm') || getError(store, 'baselines');
 
   // 本地草稿：{ [taskId]: {budget, percent_complete, actual_cost, actual_start_day, actual_finish_day} }
   const [drafts, setDrafts] = useState({});
@@ -50,6 +60,8 @@ export default function ProgressPanel({ region = 'TW' }) {
   const [ddInput, setDdInput] = useState('');
   // 拋轉預警結果提示
   const [alertMsg, setAlertMsg] = useState('');
+  // Pro Batch B Feature 3：基準線選擇器目前選取的 id（字串，對應 <select> value）
+  const [selectedBaselineId, setSelectedBaselineId] = useState('');
 
   const projectId = currentProject?.project_id;
   const tasks = currentProject?.tasks || [];
@@ -65,14 +77,25 @@ export default function ProgressPanel({ region = 'TW' }) {
     return Math.max(1, b ?? p ?? 1);
   }, [baseline, currentProject]);
 
-  // 掛載 / 切換專案時載入進度與最新基準線
+  // 掛載 / 切換專案時載入進度、使用中基準線 + 基準線選單（Pro Batch B Feature 3）
   useEffect(() => {
     if (projectId) {
       loadProgress().catch(() => {});
       loadBaseline().catch(() => {});
+      loadBaselines().catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  // 基準線選單載入/變動後，預設選取使用中者（無旗標則第一筆，向後相容舊資料）
+  useEffect(() => {
+    if (Array.isArray(baselines) && baselines.length > 0) {
+      const active = baselines.find((b) => b && b.is_active) || baselines[0];
+      setSelectedBaselineId(String(active.id));
+    } else {
+      setSelectedBaselineId('');
+    }
+  }, [baselines]);
 
   // 後端進度回傳後同步至草稿
   useEffect(() => {
@@ -148,14 +171,42 @@ export default function ProgressPanel({ region = 'TW' }) {
     }
   };
 
-  // 建立基準線：先儲存進度（確保預算落地），再建立基準線快照
+  // 建立基準線（Pro Batch B Feature 3：prompt 命名，可留白使用後端預設名稱）：
+  // 先儲存進度（確保預算落地），再建立基準線快照（後端設為使用中）。
   const handleCreateBaseline = async () => {
     setAlertMsg('');
+    // eslint-disable-next-line no-alert
+    const name = window.prompt(t(region, 'baselineName'), '');
+    if (name === null) return; // 使用者取消
     try {
       await saveProgress(buildProgressList());
-      await createBaseline();
+      await createBaseline(name.trim() || undefined);
     } catch (e) {
       /* 錯誤已存於 errors.progress */
+    }
+  };
+
+  // Pro Batch B Feature 3：將選取的基準線設為使用中（清除其餘旗標）
+  const handleActivateBaseline = async () => {
+    if (!selectedBaselineId) return;
+    setAlertMsg('');
+    try {
+      await activateBaseline(Number(selectedBaselineId));
+    } catch (e) {
+      /* 錯誤已存於 errors.baselines */
+    }
+  };
+
+  // Pro Batch B Feature 3：刪除選取的基準線（若為使用中，後端自動將最新剩餘者設為使用中）
+  const handleDeleteBaseline = async () => {
+    if (!selectedBaselineId) return;
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`${t(region, 'deleteBaseline')}?`)) return;
+    setAlertMsg('');
+    try {
+      await deleteBaseline(Number(selectedBaselineId));
+    } catch (e) {
+      /* 錯誤已存於 errors.baselines */
     }
   };
 
@@ -215,7 +266,7 @@ export default function ProgressPanel({ region = 'TW' }) {
       {/* ===== 基準線狀態列 ===== */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', marginBottom: '12px' }}>
         <span style={{ fontSize: '13px', color: '#555' }}>
-          {t(region, 'baseline')}:{' '}
+          {t(region, 'activeBaseline')}:{' '}
           {baseline ? (
             <strong style={{ color: '#2c3e50' }}>
               {baseline.name || 'baseline'} · {baseline.project_duration} {t(region, 'days')}
@@ -227,6 +278,32 @@ export default function ProgressPanel({ region = 'TW' }) {
         <button onClick={handleCreateBaseline} disabled={busy} className="secondary">
           {t(region, 'createBaseline')}
         </button>
+
+        {/* Pro Batch B Feature 3：基準線選擇器（清單 + 設為使用中 + 刪除；★ 標示使用中） */}
+        {Array.isArray(baselines) && baselines.length > 0 && (
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <label style={{ fontSize: '11px', color: '#777' }}>{t(region, 'baselines')}</label>
+            <select
+              value={selectedBaselineId}
+              onChange={(e) => setSelectedBaselineId(e.target.value)}
+              style={{ minWidth: '200px' }}
+            >
+              {baselines.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.is_active ? '★ ' : ''}
+                  {b.name || 'baseline'} · {b.created_at ? String(b.created_at).slice(0, 10) : ''} ·{' '}
+                  {b.project_duration} {t(region, 'days')}
+                </option>
+              ))}
+            </select>
+            <button onClick={handleActivateBaseline} disabled={busy} className="secondary">
+              {t(region, 'setActive')}
+            </button>
+            <button onClick={handleDeleteBaseline} disabled={busy} className="danger">
+              {t(region, 'deleteBaseline')}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ===== 進度編輯表 ===== */}

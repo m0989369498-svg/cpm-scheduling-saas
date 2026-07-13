@@ -164,6 +164,21 @@ class Task(Base):
     # 供資源撫平 (RCS / resource leveling) 引擎與 Gantt 視覺化使用；NULL 表未設定。
     # 採可攜 JSON 型別：PostgreSQL -> JSONB、sqlite -> JSON。
     resource_demands: Mapped[dict | None] = mapped_column(JSON_PORTABLE)
+    # --- Batch 5 FEAT-1：WBS 階層歸屬 ---
+    # 所屬 WBS 節點代碼 (對應 wbs_nodes.wbs_code)；刻意不設 FK，容許匯入懸空
+    # (前端歸類為「未分類」)。NULL = 未分類。
+    wbs_code: Mapped[str | None] = mapped_column(String(60))
+    # --- Batch 5 FEAT-2：活動限制 (P6-style constraints) ---
+    # constraint_type/constraint_day 皆為 NULL = 不受限 (今日行為不變)。
+    # constraint_type ∈ {SNET, SNLT, FNET, FNLT, MSO, MFO}。
+    constraint_type: Mapped[str | None] = mapped_column(String(10))
+    # 限制日 (工作日 offset，與 es/ef 同軸)。
+    constraint_day: Mapped[int | None] = mapped_column(Integer)
+    # 限制衝突 (float_time < 0)；隨 CPM 重算持久化 (與 is_critical 同模式)，
+    # 使讀取路徑無須每次重算即可得知。
+    constraint_violated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP_TZ, server_default=func.now()
     )
@@ -231,6 +246,40 @@ class ProjectHoliday(Base):
     tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
     holiday_date: Mapped[date] = mapped_column(Date, nullable=False)
     name: Mapped[str | None] = mapped_column(String(120), server_default=text("''"))
+
+
+class WbsNode(Base):
+    """WBS 節點 (wbs_nodes)。Batch 5 FEAT-1。
+
+    每專案的工作分解結構 (Work Breakdown Structure)；扁平表 (parent_code 自
+    參照上層節點代碼)，前端組樹 (buildWbsTree)。PUT /projects/{pid}/wbs 以
+    整批替換式 upsert 維護 (驗證代碼唯一、parent_code 需存在於同批清單或為
+    NULL、不得成環)。tasks.wbs_code 為選填參照，刻意不設 FK —— 容許匯入時
+    懸空，前端歸類為「未分類」。
+    受 RLS 保護 (與 tasks / projects 一致)，故置於 public schema。
+    (project_id, wbs_code) 唯一。
+    """
+
+    __tablename__ = "wbs_nodes"
+    __table_args__ = (
+        UniqueConstraint("project_id", "wbs_code", name="uq_wbs_nodes_project_code"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    wbs_code: Mapped[str] = mapped_column(String(60), nullable=False)
+    name: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=text("''")
+    )
+    parent_code: Mapped[str | None] = mapped_column(String(60))
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
 
 
 class ProjectResourceLimit(Base):
@@ -369,6 +418,12 @@ class ProjectBaseline(Base):
     )
     # 排程 + 預算快照 (可攜 JSON：PostgreSQL -> JSONB、sqlite -> JSON)。
     snapshot: Mapped[dict] = mapped_column(JSON_PORTABLE, nullable=False)
+    # --- Batch 5 FEAT-3：多組具名基準線 ---
+    # 同專案僅一條為 TRUE (應用層原子維護)；全 FALSE 時 (剛遷移的既有列)
+    # 退回「最新」為作用中基準，向後相容。
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP_TZ, server_default=func.now()
     )

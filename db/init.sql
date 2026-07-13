@@ -67,6 +67,12 @@ CREATE TABLE IF NOT EXISTS public.tasks (
     float_time   INT          DEFAULT 0,                  -- 寬裕時間 / 總時差
     is_critical  BOOLEAN      DEFAULT FALSE,              -- 是否位於要徑/關鍵路徑
     resource_demands JSONB    NULL,                       -- 每任務資源需求 e.g. {"crane":1,"manpower":15}
+    -- Batch 5 FEAT-1：WBS 階層歸屬 (可為 NULL/懸空，容許匯入友善；前端未分類分組)。
+    wbs_code     VARCHAR(60)  NULL,                       -- 所屬 WBS 節點代碼 (對應 wbs_nodes.wbs_code)
+    -- Batch 5 FEAT-2：活動限制 (P6-style constraints)。皆為 NULL = 不受限 (今日行為不變)。
+    constraint_type     VARCHAR(10) NULL,                 -- SNET/SNLT/FNET/FNLT/MSO/MFO
+    constraint_day      INT         NULL,                 -- 限制日 (工作日 offset，與 es/ef 同軸)
+    constraint_violated BOOLEAN     NOT NULL DEFAULT FALSE,-- 限制衝突 (float_time < 0)；隨 CPM 重算持久化
     created_at   TIMESTAMPTZ  DEFAULT now(),
     updated_at   TIMESTAMPTZ  DEFAULT now(),
     UNIQUE (project_id, task_id)
@@ -491,6 +497,10 @@ CREATE TABLE IF NOT EXISTS public.project_baselines (
     tenant_id   VARCHAR(50)  NOT NULL,
     name        VARCHAR(120) NOT NULL DEFAULT 'baseline',
     snapshot    JSONB        NOT NULL,                                     -- 排程 + 預算快照
+    -- Batch 5 FEAT-3：多組具名基準線 —— is_active 標記「使用中」基準線 (同專案僅一條為 TRUE，
+    -- 由應用層原子維護：設定新的 active 時同時清除同專案其餘列)。全 FALSE (剛遷移的既有列)
+    -- 時退回「最新 (max created_at / max id)」為作用中基準，向後相容。
+    is_active   BOOLEAN      NOT NULL DEFAULT FALSE,
     created_at  TIMESTAMPTZ  DEFAULT now()
 );
 
@@ -649,6 +659,39 @@ ALTER TABLE public.project_holidays ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.project_holidays FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation_project_holidays ON public.project_holidays;
 CREATE POLICY tenant_isolation_project_holidays ON public.project_holidays
+    USING       (tenant_id = current_setting('app.current_tenant', true))
+    WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
+
+-- =============================================================================
+-- 4.13 Batch 5 (FEAT-1) — WBS 階層 wbs_nodes (public schema，RLS ENABLE+FORCE)
+-- -----------------------------------------------------------------------------
+-- 每專案的工作分解結構 (Work Breakdown Structure) 節點；扁平表 (parent_code 自
+-- 參照) 前端組樹。PUT /projects/{pid}/wbs 以整批替換式 upsert 維護 (驗證代碼
+-- 唯一、parent_code 需存在於同批清單或為 NULL、不得成環)。tasks.wbs_code 為
+-- 選填外部參照 (刻意不設 FK —— 容許匯入時懸空，前端歸類為「未分類」)。
+-- 受 RLS 保護 (與 tasks / projects 一致)；本區塊置於 GRANT 區塊之前，
+-- 方能被「GRANT ON ALL TABLES IN SCHEMA public」一併涵蓋。
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS public.wbs_nodes (
+    id           BIGSERIAL    PRIMARY KEY,
+    project_id   VARCHAR(64)  NOT NULL REFERENCES public.projects(project_id) ON DELETE CASCADE,
+    tenant_id    VARCHAR(50)  NOT NULL,
+    wbs_code     VARCHAR(60)  NOT NULL,                   -- WBS 節點代碼 (專案內唯一)
+    name         VARCHAR(255) NOT NULL DEFAULT '',        -- 節點名稱
+    parent_code  VARCHAR(60)  NULL,                       -- 上層節點代碼 (NULL = 根節點)
+    sort_order   INT          NOT NULL DEFAULT 0,         -- 同層排序
+    UNIQUE (project_id, wbs_code)
+);
+
+-- 常用查詢索引 -----------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_wbs_nodes_project ON public.wbs_nodes(project_id);
+CREATE INDEX IF NOT EXISTS idx_wbs_nodes_tenant  ON public.wbs_nodes(tenant_id);
+
+-- Row Level Security — 與 tasks / projects 相同的多租戶政策 --------------------
+ALTER TABLE public.wbs_nodes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.wbs_nodes FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_wbs_nodes ON public.wbs_nodes;
+CREATE POLICY tenant_isolation_wbs_nodes ON public.wbs_nodes
     USING       (tenant_id = current_setting('app.current_tenant', true))
     WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
 

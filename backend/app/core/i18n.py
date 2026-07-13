@@ -57,6 +57,8 @@ I18N: dict[str, dict] = {
         # Batch 3 — 真實日期（FEAT-2；用於 Excel / PDF 匯出的日期欄位）
         "plannedStart": "計畫開工",
         "plannedFinish": "計畫完工",
+        # Pro Batch B — WBS 階層（FEAT-1；用於 PDF 匯出的 WBS 欄位）
+        "wbsCode": "WBS 編碼",
         "statuses": {
             "PENDING": "待辦",
             "IN_PROGRESS": "進行中",
@@ -103,6 +105,8 @@ I18N: dict[str, dict] = {
         # Batch 3 — 真实日期（FEAT-2；用于 Excel / PDF 导出的日期列）
         "plannedStart": "计划开工",
         "plannedFinish": "计划完工",
+        # Pro Batch B — WBS 层级（FEAT-1；用于 PDF 导出的 WBS 列）
+        "wbsCode": "WBS 编码",
         "statuses": {
             "PENDING": "待办",
             "IN_PROGRESS": "进行中",

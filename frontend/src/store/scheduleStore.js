@@ -30,6 +30,9 @@ export const LOADING_SCOPES = [
   'dashboard',
   'users',
   'trash',
+  // ---- Pro Batch B：WBS 階層 + 多重命名基準線 ----
+  'wbs',
+  'baselines',
 ]
 
 function readLS(key, fallback) {
@@ -110,6 +113,12 @@ export const useScheduleStore = create((set, get) => ({
 
   // ---- Batch 3：回收桶（軟刪除專案清單，僅 admin 載入）----
   trash: [],
+
+  // ---- Pro Batch B：WBS 階層 + 多重命名基準線 ----
+  // wbs       : list[{wbs_code,name,parent_code,sort_order}]（扁平清單；前端以 buildWbsTree 建樹）
+  // baselines : list[{id,name,created_at,is_active,project_duration}]（基準線選單）
+  wbs: [],
+  baselines: [],
 
   // ---- Batch 4：scoped loading/error 內部輔助 ----
 
@@ -209,6 +218,9 @@ export const useScheduleStore = create((set, get) => ({
       users: [],
       // 重置 Batch 3 回收桶
       trash: [],
+      // 重置 Pro Batch B：WBS + 多重命名基準線
+      wbs: [],
+      baselines: [],
     })
   },
 
@@ -237,6 +249,9 @@ export const useScheduleStore = create((set, get) => ({
       users: [],
       // 切換租戶：清空 Batch 3 回收桶（避免跨租戶殘留）
       trash: [],
+      // 切換租戶：清空 Pro Batch B WBS + 多重命名基準線（避免跨租戶殘留）
+      wbs: [],
+      baselines: [],
     })
   },
 
@@ -272,6 +287,9 @@ export const useScheduleStore = create((set, get) => ({
       baseline: null,
       evm: null,
       dataDate: null,
+      // Pro Batch B：切換/新建專案時重置 WBS + 多重命名基準線（不可跨專案沿用）
+      wbs: [],
+      baselines: [],
     })
     get()._start('project')
     try {
@@ -297,6 +315,9 @@ export const useScheduleStore = create((set, get) => ({
       baseline: null,
       evm: null,
       dataDate: null,
+      // Pro Batch B：切換/新建專案時重置 WBS + 多重命名基準線（不可跨專案沿用）
+      wbs: [],
+      baselines: [],
     })
     get()._start('mutation')
     try {
@@ -404,15 +425,17 @@ export const useScheduleStore = create((set, get) => ({
 
   // ---- Batch 3：依賴編輯（dep_type + lag）----
 
-  // 更新某任務的前置依賴連結（links: [{predecessor_task_id, dep_type, lag_days}]）。
-  // 以 api.updateTask 送出 PATCH 形狀 {links, expected_version}（後端重算 CPM）。
+  // 更新某任務的前置依賴連結（links: [{predecessor_task_id, dep_type, lag_days}]），
+  // 選用 extra（Pro Batch B：{constraint_type, constraint_day}）一併併入同一次 PATCH，
+  // 避免兩次連續請求造成樂觀鎖版本競態。
+  // 以 api.updateTask 送出 PATCH 形狀 {links, ...extra, expected_version}（後端重算 CPM）。
   // 409 版本衝突：重載專案 + 設定 conflictReloaded 錯誤訊息（提示已重載）。
-  updateTaskLinks: async (taskId, links) => {
+  updateTaskLinks: async (taskId, links, extra = {}) => {
     const cur = get().currentProject
     if (!cur) return null
     get()._start('mutation')
     try {
-      const patch = { links }
+      const patch = { links, ...extra }
       if (cur.version != null) patch.expected_version = cur.version
       const project = await api.updateTask(cur.project_id, taskId, patch)
       set({ currentProject: project })
@@ -628,7 +651,9 @@ export const useScheduleStore = create((set, get) => ({
     }
   },
 
-  // 建立基準線（以目前 CPM + 進度預算為快照）；存入 store.baseline 並設為最新
+  // 建立基準線（以目前 CPM + 進度預算為快照）；存入 store.baseline 並設為使用中。
+  // Pro Batch B：後端會將此新基準線設為 is_active=true 並清除其餘旗標；
+  // 背景刷新 store.baselines（picker 清單），失敗不影響本次建立結果。
   createBaseline: async (name) => {
     const cur = get().currentProject
     if (!cur) return null
@@ -637,6 +662,9 @@ export const useScheduleStore = create((set, get) => ({
       const baseline = await api.createBaseline(cur.project_id, name)
       set({ baseline })
       get()._ok('progress')
+      get()
+        .loadBaselines()
+        .catch(() => {})
       return baseline
     } catch (err) {
       get()._fail('progress', err)
@@ -662,6 +690,106 @@ export const useScheduleStore = create((set, get) => ({
         return null
       }
       get()._fail('progress', err)
+      throw err
+    }
+  },
+
+  // ---- Pro Batch B：多重命名基準線（清單 / 設為使用中 / 刪除） ----
+
+  // 載入本專案所有基準線（含 is_active 旗標 + 各自 project_duration）；存入 store.baselines
+  loadBaselines: async () => {
+    const cur = get().currentProject
+    if (!cur) return []
+    get()._start('baselines')
+    try {
+      const baselines = await api.listBaselines(cur.project_id)
+      set({ baselines: Array.isArray(baselines) ? baselines : [] })
+      get()._ok('baselines')
+      return baselines
+    } catch (err) {
+      get()._fail('baselines', err)
+      throw err
+    }
+  },
+
+  // 設為使用中基準線（後端原子性清除其餘 is_active）；
+  // 成功後刷新 store.baselines 清單 + 重載 store.baseline（供甘特圖計畫條/EVM 使用）。
+  activateBaseline: async (baselineId) => {
+    const cur = get().currentProject
+    if (!cur) return null
+    get()._start('baselines')
+    try {
+      const result = await api.activateBaseline(cur.project_id, baselineId)
+      get()._ok('baselines')
+      await Promise.all([
+        get()
+          .loadBaselines()
+          .catch(() => {}),
+        get()
+          .loadBaseline()
+          .catch(() => {}),
+      ])
+      return result
+    } catch (err) {
+      get()._fail('baselines', err)
+      throw err
+    }
+  },
+
+  // 刪除基準線（若刪除的是使用中基準線，後端會自動將最新剩餘者設為使用中，
+  // 若無剩餘則 store.baseline 重載後為 null）；成功後刷新清單 + 使用中基準線。
+  deleteBaseline: async (baselineId) => {
+    const cur = get().currentProject
+    if (!cur) return null
+    get()._start('baselines')
+    try {
+      const result = await api.deleteBaseline(cur.project_id, baselineId)
+      get()._ok('baselines')
+      await Promise.all([
+        get()
+          .loadBaselines()
+          .catch(() => {}),
+        get()
+          .loadBaseline()
+          .catch(() => {}),
+      ])
+      return result
+    } catch (err) {
+      get()._fail('baselines', err)
+      throw err
+    }
+  },
+
+  // ---- Pro Batch B：WBS 階層 (work breakdown structure) ----
+
+  // 載入當前專案 WBS 節點（扁平清單）；存入 store.wbs
+  loadWbs: async () => {
+    const cur = get().currentProject
+    if (!cur) return []
+    get()._start('wbs')
+    try {
+      const wbs = await api.getWbs(cur.project_id)
+      set({ wbs: Array.isArray(wbs) ? wbs : [] })
+      get()._ok('wbs')
+      return wbs
+    } catch (err) {
+      get()._fail('wbs', err)
+      throw err
+    }
+  },
+
+  // 儲存 WBS 節點（整批取代 upsert）；成功後以後端回傳的正規化清單更新 store.wbs
+  saveWbs: async (list) => {
+    const cur = get().currentProject
+    if (!cur) return []
+    get()._start('wbs')
+    try {
+      const wbs = await api.saveWbs(cur.project_id, list)
+      set({ wbs: Array.isArray(wbs) ? wbs : [] })
+      get()._ok('wbs')
+      return wbs
+    } catch (err) {
+      get()._fail('wbs', err)
       throw err
     }
   },

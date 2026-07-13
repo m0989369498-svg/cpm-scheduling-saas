@@ -20,6 +20,9 @@
             SS: pred.es + lag
             FF: pred.ef + lag - succ.duration
             SF: pred.es + lag - succ.duration
+        活動限制（activity constraint，P6-style；在依賴推導的 es 之後套用）：
+            SNET / MSO: es = max(es, constraint_day)
+            FNET / MFO: es = max(es, constraint_day - duration)
         ef = es + duration
     後向掃描（backward pass，反向拓樸順序）：
         每條出邊對前置任務（pred）給出 lf 上界（bound）：
@@ -28,9 +31,18 @@
             FF: succ.lf - lag
             SF: succ.lf - lag + pred.duration
         lf = min(各 bound，預設/上限為專案總工期)
+        活動限制（在依賴推導的 lf 之後套用）：
+            FNLT / MFO: lf = min(lf, constraint_day)
+            SNLT / MSO: lf = min(lf, constraint_day + duration)
         ls = lf - duration
-        float_time = ls - es
-        is_critical = (float_time == 0)
+        float_time = ls - es（有限制衝突時可為負值）
+        is_critical = (float_time <= 0)
+            —— 無限制的傳統 CPM 中 float_time 恆 >= 0，故此變更對既有
+               （無限制）專案的結果與舊版 float_time == 0 完全一致，
+               保證向下相容（backward compatible）。
+        constraint_violated = (float_time < 0)
+    constraint_type/constraint_day 皆為 None 時（今日行為）不套用任何限制，
+    等同於舊版無限制演算法。
 
 健全性（robustness）：
     - 偵測循環相依（cycle）：拓樸排序消化的節點數 < N 時拋出 ValueError
@@ -221,7 +233,8 @@ def calculate_cpm(tasks: list[TaskDefinition]) -> dict[str, TaskResult]:
     es: dict[str, int] = {}
     ef: dict[str, int] = {}
     for tid in order:
-        duration = node_map[tid].duration
+        definition = node_map[tid]
+        duration = definition.duration
         earliest = 0  # es 下限為 0：負 lag（lead）不得使任務早於專案開始
         for pred, dep_type, lag in in_edges.get(tid, ()):
             if dep_type == "FS":
@@ -234,6 +247,18 @@ def calculate_cpm(tasks: list[TaskDefinition]) -> dict[str, TaskResult]:
                 bound = es[pred] + lag - duration
             if bound > earliest:
                 earliest = bound
+        # 活動限制（activity constraint）：在依賴推導的 es 之後套用前向邊界。
+        # constraint_type/constraint_day 皆為 None 時不做任何調整
+        # （今日/無限制行為完全不變）。
+        ctype = definition.constraint_type
+        cday = definition.constraint_day
+        if ctype in ("SNET", "MSO"):
+            if cday > earliest:
+                earliest = cday
+        elif ctype in ("FNET", "MFO"):
+            bound = cday - duration
+            if bound > earliest:
+                earliest = bound
         es[tid] = earliest
         ef[tid] = earliest + duration
 
@@ -243,7 +268,8 @@ def calculate_cpm(tasks: list[TaskDefinition]) -> dict[str, TaskResult]:
     lf: dict[str, int] = {}
     ls: dict[str, int] = {}
     for tid in reversed(order):
-        duration = node_map[tid].duration
+        definition = node_map[tid]
+        duration = definition.duration
         # lf 上限為專案總工期（終端任務即等於專案總工期）
         latest = total_duration
         for succ, dep_type, lag in out_edges.get(tid, ()):
@@ -255,6 +281,16 @@ def calculate_cpm(tasks: list[TaskDefinition]) -> dict[str, TaskResult]:
                 bound = lf[succ] - lag
             else:  # SF
                 bound = lf[succ] - lag + duration
+            if bound < latest:
+                latest = bound
+        # 活動限制：在依賴推導的 lf 之後套用後向邊界。
+        ctype = definition.constraint_type
+        cday = definition.constraint_day
+        if ctype in ("FNLT", "MFO"):
+            if cday < latest:
+                latest = cday
+        elif ctype in ("SNLT", "MSO"):
+            bound = cday + duration
             if bound < latest:
                 latest = bound
         lf[tid] = latest
@@ -280,12 +316,16 @@ def calculate_cpm(tasks: list[TaskDefinition]) -> dict[str, TaskResult]:
             predecessors=preds_out,
             links=links_out,
             status=definition.status,
+            wbs_code=definition.wbs_code,
+            constraint_type=definition.constraint_type,
+            constraint_day=definition.constraint_day,
             es=es[tid],
             ef=ef[tid],
             ls=ls[tid],
             lf=lf[tid],
             float_time=float_time,
-            is_critical=(float_time == 0),
+            is_critical=(float_time <= 0),
+            constraint_violated=(float_time < 0),
         )
 
     return results
@@ -299,8 +339,9 @@ def project_duration(task_map: dict[str, TaskResult]) -> int:
 def critical_path(task_map: dict[str, TaskResult]) -> list[str]:
     """回傳要徑（critical path）上的 task_id 清單，依拓樸/時間順序排列。
 
-    要徑定義為 float_time == 0 的任務。為了得到合理且穩定的順序，
-    依 (es, ef, task_id) 排序。
+    要徑定義為 is_critical（float_time <= 0）的任務；有活動限制衝突時
+    float_time 可能為負值，該任務仍視為要徑（甚至已違反限制）。
+    為了得到合理且穩定的順序，依 (es, ef, task_id) 排序。
     """
     critical = [r for r in task_map.values() if r.is_critical]
     critical.sort(key=lambda r: (r.es, r.ef, r.task_id))

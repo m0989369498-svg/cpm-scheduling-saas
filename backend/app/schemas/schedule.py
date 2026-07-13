@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # 系統共用的狀態值（status）：
 #   PENDING      待處理
@@ -27,6 +27,41 @@ STATUS_VALUES = ("PENDING", "IN_PROGRESS", "COMPLETED", "DELAYED")
 #   FF  完成-完成（Finish-to-Finish）
 #   SF  開始-完成（Start-to-Finish）
 DEP_TYPE_VALUES = ("FS", "SS", "FF", "SF")
+
+# 活動限制型態（activity constraint types，P6-style）：
+#   SNET  不早於此日開始（Start No Earlier Than）
+#   SNLT  不晚於此日開始（Start No Later Than）
+#   FNET  不早於此日完成（Finish No Earlier Than）
+#   FNLT  不晚於此日完成（Finish No Later Than）
+#   MSO   強制開始（Mandatory Start，等同 SNET 但語意上為硬性釘選）
+#   MFO   強制完成（Mandatory Finish，等同 FNET 但語意上為硬性釘選）
+# constraint_type 為 None（連同 constraint_day 亦為 None）表示不受限，
+# 今日（無限制）行為完全不變。
+CONSTRAINT_TYPE_VALUES = ("SNET", "SNLT", "FNET", "FNLT", "MSO", "MFO")
+
+
+def _normalize_constraint_type(value: str | None) -> str | None:
+    """正規化並驗證 constraint_type；None 原樣通過（表示不受限）。"""
+    if value is None:
+        return None
+    normalized = value.strip().upper()
+    if normalized not in CONSTRAINT_TYPE_VALUES:
+        raise ValueError(
+            f"不支援的活動限制型態（unsupported constraint_type）：{value}，"
+            f"允許值：{', '.join(CONSTRAINT_TYPE_VALUES)}"
+        )
+    return normalized
+
+
+def _check_constraint_pair(
+    constraint_type: str | None, constraint_day: int | None
+) -> None:
+    """constraint_type 與 constraint_day 須同時為 None 或同時提供（缺一不可）。"""
+    if (constraint_type is None) != (constraint_day is None):
+        raise ValueError(
+            "constraint_type 與 constraint_day 須同時提供或同時省略"
+            "（both-or-neither）"
+        )
 
 
 class DependencyLink(BaseModel):
@@ -71,6 +106,25 @@ class TaskDefinition(BaseModel):
     # 相依連結（選填）：含 dep_type（FS/SS/FF/SF）與 lag_days；
     # None 表示沿用 predecessors（視為 FS + 0）。
     links: list[DependencyLink] | None = None
+    # 所屬 WBS 節點代碼（選填；對應 wbs_nodes.wbs_code）。刻意不驗證存在性，
+    # 容許懸空（匯入友善），前端將懸空 / None 歸類為「未分類」。
+    wbs_code: str | None = None
+    # 活動限制（activity constraint，P6-style）：
+    #   constraint_type ∈ {SNET, SNLT, FNET, FNLT, MSO, MFO}；None = 不受限。
+    #   constraint_day  以工作日偏移計（與 es/ef 同軸），須 >= 0。
+    #   兩者須同時為 None（不受限）或同時提供（缺一不可，否則 422）。
+    constraint_type: str | None = None
+    constraint_day: int | None = Field(default=None, ge=0)
+
+    @field_validator("constraint_type")
+    @classmethod
+    def _validate_constraint_type(cls, value: str | None) -> str | None:
+        return _normalize_constraint_type(value)
+
+    @model_validator(mode="after")
+    def _validate_constraint_completeness(self) -> "TaskDefinition":
+        _check_constraint_pair(self.constraint_type, self.constraint_day)
+        return self
 
 
 class TaskResult(TaskDefinition):
@@ -87,8 +141,13 @@ class TaskResult(TaskDefinition):
     ef: int = 0
     ls: int = 0
     lf: int = 0
+    # 寬裕時間 / 總時差（Total Float）= ls - es；有活動限制衝突時可為負值。
     float_time: int = 0
+    # 是否位於要徑（float_time <= 0；無限制專案中 float_time 恆 >= 0，
+    # 故行為與舊版 float_time == 0 完全一致 —— 向下相容）。
     is_critical: bool = False
+    # 是否違反活動限制（float_time < 0，即限制造成的排程衝突）。
+    constraint_violated: bool = False
     # 每任務資源需求（resource_demands），例：{"crane": 1, "manpower": 15}。
     # 供資源撫平（resource leveling）與 Gantt 視覺化使用；None 表未設定。
     resource_demands: dict[str, int] | None = None
@@ -137,6 +196,20 @@ class ProjectUpdate(ProjectBase):
     expected_version: int | None = None
 
 
+class WbsNode(BaseModel):
+    """WBS（work breakdown structure）節點，扁平清單中的單一項目。
+
+    樹狀關係以 parent_code 表達（根節點 parent_code 為 None）；清單本身為
+    扁平（flat）、由前端負責建樹。同時用於 GET/PUT /projects/{pid}/wbs 的
+    請求與回應項目，以及 ProjectOut.wbs 摘要清單。
+    """
+
+    wbs_code: str
+    name: str = ""
+    parent_code: str | None = None
+    sort_order: int = 0
+
+
 class ProjectOut(ProjectBase):
     """專案完整輸出（含 CPM 結果）。"""
 
@@ -151,6 +224,8 @@ class ProjectOut(ProjectBase):
     # FEAT-2：偏移 0..project_duration 對應的 ISO 日期清單；
     # 僅在 start_date 已設定時提供（None = 未設定開工日期）。
     day_dates: list[str] | None = None
+    # Batch 5 FEAT-1：專案 WBS 節點扁平清單（前端負責建樹）；無 WBS 時為空清單。
+    wbs: list[WbsNode] = Field(default_factory=list)
 
 
 class HolidayEntry(BaseModel):
@@ -183,8 +258,24 @@ class TaskCreate(BaseModel):
     resource_demands: dict[str, int] | None = None
     # 相依連結（選填）：提供時 predecessors 將被忽略並由 links 重新推導。
     links: list[DependencyLink] | None = None
+    # 所屬 WBS 節點代碼（選填；允許懸空，匯入友善）。
+    wbs_code: str | None = None
+    # 活動限制（選填）：constraint_type ∈ {SNET,SNLT,FNET,FNLT,MSO,MFO}，
+    # constraint_day 為工作日偏移（>=0）。兩者須同時提供或同時省略。
+    constraint_type: str | None = None
+    constraint_day: int | None = Field(default=None, ge=0)
     # FEAT-3 樂觀併發：提供時須等於當前 project.version，否則 409。
     expected_version: int | None = None
+
+    @field_validator("constraint_type")
+    @classmethod
+    def _validate_constraint_type(cls, value: str | None) -> str | None:
+        return _normalize_constraint_type(value)
+
+    @model_validator(mode="after")
+    def _validate_constraint_completeness(self) -> "TaskCreate":
+        _check_constraint_pair(self.constraint_type, self.constraint_day)
+        return self
 
 
 class TaskDurationUpdate(BaseModel):
@@ -207,8 +298,24 @@ class TaskUpdate(BaseModel):
     # 相依連結（選填）：提供時 predecessors 將被忽略並由 links 重新推導；
     # None 表示不變更相依。
     links: list[DependencyLink] | None = None
+    # 所屬 WBS 節點代碼（選填）；None 表示不變更。
+    wbs_code: str | None = None
+    # 活動限制（選填）；None（兩者皆未提供）表示不變更。提供時兩者須同時
+    # 給值（清除限制／設定限制皆須同時提供 constraint_type + constraint_day）。
+    constraint_type: str | None = None
+    constraint_day: int | None = Field(default=None, ge=0)
     # FEAT-3 樂觀併發：提供時須等於當前 project.version，否則 409。
     expected_version: int | None = None
+
+    @field_validator("constraint_type")
+    @classmethod
+    def _validate_constraint_type(cls, value: str | None) -> str | None:
+        return _normalize_constraint_type(value)
+
+    @model_validator(mode="after")
+    def _validate_constraint_completeness(self) -> "TaskUpdate":
+        _check_constraint_pair(self.constraint_type, self.constraint_day)
+        return self
 
 
 class ErpSyncRequest(BaseModel):

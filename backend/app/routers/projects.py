@@ -31,7 +31,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.deps import verify_tenant, get_db, TenantContext, require_role
-from app.models.orm import Project, ProjectHoliday, Task, TaskDependency
+from app.models.orm import (
+    Project,
+    ProjectHoliday,
+    Task,
+    TaskDependency,
+    WbsNode as WbsNodeOrm,
+)
 from app.schemas.schedule import (
     DependencyLink,
     HolidayEntry,
@@ -41,6 +47,7 @@ from app.schemas.schedule import (
     ProjectUpdate,
     TaskDefinition,
     TaskResult,
+    WbsNode,
 )
 from app.core import workcal
 from app.core.cpm_engine import calculate_cpm, project_duration, critical_path
@@ -144,6 +151,69 @@ async def _load_holiday_dates(db: AsyncSession, project_id: str) -> set[date]:
     return {h.holiday_date for h in await _load_holidays(db, project_id)}
 
 
+async def _load_wbs_nodes(db: AsyncSession, project_id: str) -> list[WbsNodeOrm]:
+    """載入專案 WBS 節點（依 sort_order、wbs_code 排序，輸出穩定）。"""
+    result = await db.execute(
+        select(WbsNodeOrm)
+        .where(WbsNodeOrm.project_id == project_id)
+        .order_by(WbsNodeOrm.sort_order, WbsNodeOrm.wbs_code)
+    )
+    return list(result.scalars().all())
+
+
+def _wbs_nodes_to_schema(rows: list[WbsNodeOrm]) -> list[WbsNode]:
+    """WBS 節點 ORM 列 -> Pydantic（GET /wbs 與 ProjectOut.wbs 共用）。"""
+    return [
+        WbsNode(
+            wbs_code=r.wbs_code,
+            name=r.name or "",
+            parent_code=r.parent_code,
+            sort_order=int(r.sort_order or 0),
+        )
+        for r in rows
+    ]
+
+
+def _validate_wbs_tree(nodes: list[WbsNode]) -> None:
+    """驗證 WBS 扁平清單（寫入前）：失敗一律 422，且呼叫端不得寫入任何列。
+
+    規則：
+      1) wbs_code 於清單內唯一。
+      2) parent_code 為 None，或參照清單內某個 wbs_code（不可懸空指向清單外）。
+      3) 不得構成循環（cycle）：由任一節點沿 parent_code 往上追溯不得重見已走過節點。
+    """
+    codes = [n.wbs_code for n in nodes]
+    if len(set(codes)) != len(codes):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="WBS 代碼重複（duplicate wbs_code）",
+        )
+    code_set = set(codes)
+    parent_map: dict[str, str | None] = {}
+    for n in nodes:
+        if n.parent_code is not None and n.parent_code not in code_set:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"parent_code 參照不存在的節點（unknown parent_code）："
+                    f"{n.parent_code}（節點 {n.wbs_code}）"
+                ),
+            )
+        parent_map[n.wbs_code] = n.parent_code
+
+    for start in codes:
+        visited: set[str] = set()
+        current: str | None = start
+        while current is not None:
+            if current in visited:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"WBS 階層存在循環（cycle detected）：{start}",
+                )
+            visited.add(current)
+            current = parent_map.get(current)
+
+
 async def _task_aggregates(
     db: AsyncSession, project_ids: list[str]
 ) -> dict[str, tuple[int, int]]:
@@ -200,6 +270,8 @@ def _build_task_definitions(
     FEAT-1：同時填入 predecessors（推導，向下相容）與 links（dep_type/lag_days），
     使 CPM 引擎（以及重用本助手的 resource_leveling / monte_carlo）取得完整
     的相依語義。
+    Batch 5：一併帶入 wbs_code（WBS 歸屬，不影響計算）與 constraint_type /
+    constraint_day（活動限制，供引擎套用；皆為 None 時行為不變）。
     """
     pred_map, links_map = _dependency_maps(deps)
 
@@ -213,6 +285,9 @@ def _build_task_definitions(
                 predecessors=pred_map.get(t.task_id, []),
                 links=links_map.get(t.task_id, []),
                 status=t.status or "PENDING",
+                wbs_code=t.wbs_code,
+                constraint_type=t.constraint_type,
+                constraint_day=t.constraint_day,
             )
         )
     return definitions
@@ -225,6 +300,7 @@ def _to_project_out(
     task_results: dict[str, TaskResult],
     duration: int,
     holidays: set[date] | None = None,
+    wbs_nodes: list[WbsNodeOrm] | None = None,
 ) -> ProjectOut:
     """組裝 ProjectOut（合併 CPM 計算結果）。
 
@@ -232,6 +308,8 @@ def _to_project_out(
     FEAT-2：start_date 已設定時輸出 day_dates（offset 0..duration 的 ISO 日期，
             以 work_days 工作日曆 + 例外假日換算）。
     FEAT-3：輸出 version 供客戶端樂觀併發。
+    Batch 5：輸出 wbs（專案 WBS 節點扁平清單）；任務一併輸出 wbs_code /
+             constraint_type / constraint_day / constraint_violated。
     """
     pred_map, links_map = _dependency_maps(deps)
 
@@ -239,11 +317,15 @@ def _to_project_out(
     for t in tasks:
         res = task_results.get(t.task_id)
         if res is not None:
-            # 以引擎結果為準，但補回相依與名稱/狀態
+            # 以引擎結果為準，但補回相依與名稱/狀態/WBS 歸屬（皆非 CPM 計算欄位，
+            # 以 DB 為準，與 predecessors/status 相同處理方式）。
             res.task_name = t.task_name or ""
             res.predecessors = pred_map.get(t.task_id, [])
             res.links = links_map.get(t.task_id, [])
             res.status = t.status or "PENDING"
+            res.wbs_code = t.wbs_code
+            res.constraint_type = t.constraint_type
+            res.constraint_day = t.constraint_day
             out_tasks.append(res)
         else:
             out_tasks.append(
@@ -254,12 +336,16 @@ def _to_project_out(
                     predecessors=pred_map.get(t.task_id, []),
                     links=links_map.get(t.task_id, []),
                     status=t.status or "PENDING",
+                    wbs_code=t.wbs_code,
+                    constraint_type=t.constraint_type,
+                    constraint_day=t.constraint_day,
                     es=t.es or 0,
                     ef=t.ef or 0,
                     ls=t.ls or 0,
                     lf=t.lf or 0,
                     float_time=t.float_time or 0,
                     is_critical=bool(t.is_critical),
+                    constraint_violated=bool(t.constraint_violated),
                 )
             )
 
@@ -285,6 +371,7 @@ def _to_project_out(
         work_days=work_days,
         version=int(project.version or 0),
         day_dates=day_dates_out,
+        wbs=_wbs_nodes_to_schema(wbs_nodes or []),
     )
 
 
@@ -318,12 +405,17 @@ async def recompute_project(
     if project.start_date is not None:
         holidays = await _load_holiday_dates(db, project.project_id)
 
+    # Batch 5：載入 WBS 節點供 ProjectOut.wbs 輸出。
+    wbs_nodes = await _load_wbs_nodes(db, project.project_id)
+
     definitions = _build_task_definitions(tasks, deps)
 
     # 空專案：不需計算
     if not definitions:
         await db.flush()
-        return _to_project_out(project, tasks, deps, {}, 0, holidays=holidays)
+        return _to_project_out(
+            project, tasks, deps, {}, 0, holidays=holidays, wbs_nodes=wbs_nodes
+        )
 
     try:
         task_results = calculate_cpm(definitions)
@@ -354,6 +446,7 @@ async def recompute_project(
             and (t.lf or 0) == int(res.lf)
             and (t.float_time or 0) == int(res.float_time)
             and bool(t.is_critical) == bool(res.is_critical)
+            and bool(t.constraint_violated) == bool(res.constraint_violated)
         ):
             continue
         changed.append(
@@ -365,6 +458,9 @@ async def recompute_project(
                 "lf": int(res.lf),
                 "float_time": int(res.float_time),
                 "is_critical": bool(res.is_critical),
+                # Batch 5 FEAT-2：限制衝突（float_time < 0）隨重算持久化，
+                # 與 is_critical 同模式，讀取路徑無須重算即可得知。
+                "constraint_violated": bool(res.constraint_violated),
             }
         )
         set_committed_value(t, "es", int(res.es))
@@ -373,6 +469,7 @@ async def recompute_project(
         set_committed_value(t, "lf", int(res.lf))
         set_committed_value(t, "float_time", int(res.float_time))
         set_committed_value(t, "is_critical", bool(res.is_critical))
+        set_committed_value(t, "constraint_violated", bool(res.constraint_violated))
 
     if changed:
         await db.execute(sa_update(Task), changed)
@@ -380,7 +477,8 @@ async def recompute_project(
     await db.flush()
 
     project_out = _to_project_out(
-        project, tasks, deps, task_results, duration, holidays=holidays
+        project, tasks, deps, task_results, duration, holidays=holidays,
+        wbs_nodes=wbs_nodes,
     )
 
     # 安全修正 (FIX-4): 移除每次編輯都阻斷請求交易的 best-effort 通知。
@@ -533,6 +631,10 @@ async def create_project(
                 task_name=td.task_name or "",
                 duration=td.duration,
                 status=td.status or "PENDING",
+                # Batch 5：WBS 歸屬（選填、容許懸空）+ 活動限制（選填）。
+                wbs_code=td.wbs_code,
+                constraint_type=td.constraint_type,
+                constraint_day=td.constraint_day,
             )
         )
     await db.flush()
@@ -625,8 +727,12 @@ async def get_project(
     if project.start_date is not None:
         holidays = await _load_holiday_dates(db, project_id)
 
+    wbs_nodes = await _load_wbs_nodes(db, project_id)
+
     # task_results 傳空 dict -> _to_project_out 直接以 DB 持久化欄位組裝 TaskResult。
-    return _to_project_out(project, tasks, deps, {}, duration, holidays=holidays)
+    return _to_project_out(
+        project, tasks, deps, {}, duration, holidays=holidays, wbs_nodes=wbs_nodes
+    )
 
 
 @router.put("/{project_id}", response_model=ProjectOut)
@@ -866,6 +972,71 @@ async def set_project_holidays(
     return [
         HolidayEntry(holiday_date=r.holiday_date, name=r.name or "") for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Endpoints —— WBS 階層（Batch 5 FEAT-1，work breakdown structure）
+# ---------------------------------------------------------------------------
+@router.get("/{project_id}/wbs", response_model=list[WbsNode])
+async def get_project_wbs(
+    project_id: str,
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+) -> list[WbsNode]:
+    """列出專案 WBS 節點（扁平清單，依 sort_order/wbs_code 排序；前端負責建樹）。"""
+    await _get_project_or_404(db, project_id, ctx.tenant_id)
+    rows = await _load_wbs_nodes(db, project_id)
+    return _wbs_nodes_to_schema(rows)
+
+
+@router.put("/{project_id}/wbs", response_model=list[WbsNode])
+async def set_project_wbs(
+    project_id: str,
+    payload: list[WbsNode],
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
+) -> list[WbsNode]:
+    """以替換式 upsert 覆寫專案 WBS 節點清單（editor+）。
+
+    驗證失敗（代碼重複 / parent_code 懸空 / 成環）一律 422，且「不」寫入任何列
+    （先驗證、後刪除、後插入）。tenant_id 一律取自 ctx（絕不信任輸入）。
+    回傳更新後的完整 WBS 清單。
+    """
+    await _get_project_or_404(db, project_id, ctx.tenant_id)
+    _validate_wbs_tree(payload)
+
+    await db.execute(sa_delete(WbsNodeOrm).where(WbsNodeOrm.project_id == project_id))
+    seen: set[str] = set()
+    for entry in payload:
+        if entry.wbs_code in seen:
+            continue
+        seen.add(entry.wbs_code)
+        db.add(
+            WbsNodeOrm(
+                project_id=project_id,
+                tenant_id=ctx.tenant_id,
+                wbs_code=entry.wbs_code,
+                name=entry.name or "",
+                parent_code=entry.parent_code,
+                sort_order=int(entry.sort_order or 0),
+            )
+        )
+    await db.flush()
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "WBS_UPDATE",
+            {"project_id": project_id, "count": len(seen)},
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit WBS_UPDATE failed (ignored): %s", exc)
+
+    rows = await _load_wbs_nodes(db, project_id)
+    return _wbs_nodes_to_schema(rows)
 
 
 @router.get("/{project_id}/report")

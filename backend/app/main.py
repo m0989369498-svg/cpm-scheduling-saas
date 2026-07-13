@@ -685,6 +685,62 @@ async def _ensure_batch4_columns() -> None:
                         label, exc)
 
 
+async def _ensure_batch5_columns() -> None:
+    """冪等為「既有」sqlite dev DB 補上 Batch 5 新欄位 (live upgrade，免重建)。
+
+    Batch 5 新增：
+      tasks.wbs_code (FEAT-1 WBS 階層歸屬)、
+      tasks.constraint_type / constraint_day / constraint_violated
+        (FEAT-2 活動限制 P6-style constraints)、
+      project_baselines.is_active (FEAT-3 多組具名基準線)。
+    新表 wbs_nodes 由 create_all 補建 (create_all 只補「缺漏的表」，不補既有
+    表的欄位，故此處僅需處理既存表的新欄位)。
+
+    對「全新」DB，create_all / init.sql 已含這些欄位；但對「既有」cpm_dev.db，
+    create_all 不會修改既存表，故此處逐欄以 ALTER TABLE ADD COLUMN 補齊 ——
+    沿用 _ensure_batch3_columns / _ensure_batch4_columns 的已驗證模式：
+    「每句各自 try/except + 各自交易」：
+
+      - 欄位已存在 (新庫 / 已升級) -> 該欄 ALTER 失敗 (duplicate column) -> 略過。
+      - 表尚未建立 -> ALTER 失敗 -> 略過 (隨後/先前的 create_all 會建出完整新表)。
+
+    僅針對 sqlite (本機 dev) 執行：PostgreSQL 由 Alembic 0004 / db/init.sql 權威
+    管理。如此既有的 cpm_dev.db 可「無需重建」升級。
+    """
+    if not is_sqlite():
+        return
+    from sqlalchemy import text
+
+    from app import database
+
+    # (標籤, DDL) —— 預設值與 init.sql / ORM server_default 一致。
+    statements = [
+        # FEAT-1 WBS 階層歸屬
+        ("tasks.wbs_code",
+         "ALTER TABLE tasks ADD COLUMN wbs_code VARCHAR(60)"),
+        # FEAT-2 活動限制 (P6-style constraints)
+        ("tasks.constraint_type",
+         "ALTER TABLE tasks ADD COLUMN constraint_type VARCHAR(10)"),
+        ("tasks.constraint_day",
+         "ALTER TABLE tasks ADD COLUMN constraint_day INTEGER"),
+        ("tasks.constraint_violated",
+         "ALTER TABLE tasks ADD COLUMN constraint_violated BOOLEAN "
+         "NOT NULL DEFAULT 0"),
+        # FEAT-3 多組具名基準線
+        ("project_baselines.is_active",
+         "ALTER TABLE project_baselines ADD COLUMN is_active BOOLEAN "
+         "NOT NULL DEFAULT 0"),
+    ]
+    for label, ddl in statements:
+        try:
+            async with database.get_engine().begin() as conn:
+                await conn.execute(text(ddl))
+            logger.info("Batch 5 column added: %s (live sqlite upgrade).", label)
+        except Exception as exc:  # noqa: BLE001 - 欄位已存在 / 表未建 皆視為正常
+            logger.info("Batch 5 ALTER skipped for %s (already present?): %s",
+                        label, exc)
+
+
 async def _bootstrap_database() -> None:
     """啟動時的資料庫初始化 (create_all + 種子)，全程 best-effort。
 
@@ -718,6 +774,14 @@ async def _bootstrap_database() -> None:
             await _ensure_batch4_columns()
         except Exception as exc:  # noqa: BLE001
             logger.info("Batch 4 column ensure skipped: %s", exc)
+
+        # Batch 5：為既有 sqlite dev DB 冪等補上 WBS / 活動限制 / 多組基準線
+        # 新欄位 (新庫為 no-op)。須在 _seed_core_data「之前」執行 —— 理由同
+        # Batch 3 (ORM 的 SELECT 已含新欄位，未升級的既有庫會使種子查詢失敗)。
+        try:
+            await _ensure_batch5_columns()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Batch 5 column ensure skipped: %s", exc)
 
         try:
             await _seed_core_data()

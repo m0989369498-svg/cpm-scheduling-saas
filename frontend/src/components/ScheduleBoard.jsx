@@ -7,6 +7,8 @@ import ProjectForm from './ProjectForm';
 import ResourcePanel from './ResourcePanel';
 import RiskPanel from './RiskPanel';
 import ProgressPanel from './ProgressPanel';
+import WbsPanel from './WbsPanel';
+import { groupTasksByWbs } from '../utils/wbsTree.js';
 
 /**
  * ScheduleBoard 工期排程主控板
@@ -26,6 +28,9 @@ const REGIONS = ['TW', 'CN'];
 const STATUS_VALUES = ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'DELAYED'];
 // Batch 3：依賴類型（FS 完成-開始 / SS 開始-開始 / FF 完成-完成 / SF 開始-完成）
 const DEP_TYPES = ['FS', 'SS', 'FF', 'SF'];
+// Pro Batch B Feature 2：活動限制類型（P6-style；SNET/SNLT 作用於 es，FNET/FNLT 作用於 ef 推導的 es，
+// MSO/MFO 同時鎖定 es 與 lf——語意細節見後端 cpm_engine）
+const CONSTRAINT_TYPES = ['SNET', 'SNLT', 'FNET', 'FNLT', 'MSO', 'MFO'];
 
 // Batch 3：依賴連結顯示標籤 — 'A'（FS+0）或 'A(SS+2)' / 'A(FS-1)'
 function linkLabel(l) {
@@ -55,7 +60,21 @@ const TAB_ERROR_SCOPES = {
   resources: ['resources', 'leveling'],
   risk: ['risk', 'simulation'],
   progress: ['progress', 'evm'],
+  wbs: ['wbs'],
 };
+
+// Pro Batch B Feature 2：限制日（工作日偏移）<-> 實際日期字串互轉（dayDates 提供時使用日期輸入框）
+function dayOffsetToDateStr(day, dayDates) {
+  if (day === '' || day == null || !Array.isArray(dayDates)) return '';
+  const idx = Number(day);
+  if (!Number.isFinite(idx) || idx < 0 || idx >= dayDates.length) return '';
+  return dayDates[idx];
+}
+function dateStrToDayOffset(dateStr, dayDates) {
+  if (!dateStr || !Array.isArray(dayDates)) return '';
+  const idx = dayDates.indexOf(dateStr);
+  return idx >= 0 ? String(idx) : '';
+}
 
 export default function ScheduleBoard() {
   const store = useScheduleStore();
@@ -69,6 +88,7 @@ export default function ScheduleBoard() {
     leveling,
     baseline,
     progress,
+    wbs,
     setTenant,
     setRegion,
     loadProjects,
@@ -80,6 +100,7 @@ export default function ScheduleBoard() {
     syncErp,
     loadProgress,
     loadBaseline,
+    loadWbs,
     updateTaskLinks,
     clearError,
   } = store;
@@ -112,8 +133,12 @@ export default function ScheduleBoard() {
   const [showProjectForm, setShowProjectForm] = useState(false);
   // Phase 8 分頁：'schedule'（排程/甘特圖）| 'resources'（資源撫平）| 'risk'（風險分析）
   const [activeTab, setActiveTab] = useState('schedule');
-  // Batch 3：依賴編輯彈窗 — { taskId, draft: { [otherTaskId]: {checked, dep_type, lag_days} } } | null
+  // Batch 3：依賴編輯彈窗 — { taskId, draft: { [otherTaskId]: {checked, dep_type, lag_days} },
+  //   constraintType, constraintDay } | null
+  // （Pro Batch B Feature 2：同一彈窗新增「限制條件」區塊，與依賴一起於單次 PATCH 送出）
   const [depEdit, setDepEdit] = useState(null);
+  // Pro Batch B Feature 1：已收合的 WBS 群組（任務表格）；存 wbs_code 集合
+  const [collapsedWbs, setCollapsedWbs] = useState(() => new Set());
 
   // 掛載時載入專案清單
   useEffect(() => {
@@ -139,10 +164,13 @@ export default function ScheduleBoard() {
 
   // Phase 9：切換專案後預載進度 + 最新基準線，使甘特圖能在「排程」分頁即顯示
   // 計畫 vs 實際疊圖與完成度填色（兩者皆為 best-effort；失敗時靜默，不影響排程）。
+  // Pro Batch B：同時預載 WBS 節點，使甘特圖 + 任務表格的分組渲染在「排程」分頁
+  // 即可用（不必先切到 WBS 編輯器分頁）。
   useEffect(() => {
     if (currentProject?.project_id) {
       loadProgress().catch(() => {});
       loadBaseline().catch(() => {});
+      loadWbs().catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.project_id]);
@@ -177,6 +205,22 @@ export default function ScheduleBoard() {
     }
     return undefined;
   }, [progress]);
+
+  // Pro Batch B Feature 1：任務表格分組列 — wbs 非空時依 WBS 樹形分組（含未分類），
+  // 為空時回傳純任務列表（呼叫端據 hasWbsGroups 判斷渲染扁平表格，行為不變）。
+  const hasWbsGroups = Array.isArray(wbs) && wbs.length > 0;
+  const groupedTaskRows = useMemo(
+    () => groupTasksByWbs(tasks, wbs, t(region, 'uncategorized')),
+    [tasks, wbs, region],
+  );
+  const toggleWbsGroup = (code) => {
+    setCollapsedWbs((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  };
 
   // ---- 事件處理 ----
 
@@ -292,7 +336,13 @@ export default function ScheduleBoard() {
         lag_days: l ? (l.lag_days ?? 0) : 0,
       };
     });
-    setDepEdit({ taskId: task.task_id, draft });
+    // Pro Batch B Feature 2：以現有任務的限制條件初始化（無限制 -> 'NONE' + 空白日）
+    setDepEdit({
+      taskId: task.task_id,
+      draft,
+      constraintType: task.constraint_type || 'NONE',
+      constraintDay: task.constraint_day != null ? String(task.constraint_day) : '',
+    });
   };
 
   // 更新依賴草稿某一列
@@ -307,8 +357,10 @@ export default function ScheduleBoard() {
     );
   };
 
-  // 儲存依賴：勾選列 -> links，呼叫 store.updateTaskLinks（帶 expected_version 樂觀鎖；
-  // 409 由 store 重載專案並以 conflictReloaded 提示）。
+  // 儲存依賴 + 限制條件（Pro Batch B Feature 2：同一次 PATCH，避免兩次請求造成
+  // 樂觀鎖版本競態）：勾選列 -> links，限制類型/日 -> constraint_type/constraint_day
+  // （選 '無' 時兩者皆送 null，清除既有限制）；呼叫 store.updateTaskLinks（帶
+  // expected_version 樂觀鎖；409 由 store 重載專案並以 conflictReloaded 提示）。
   const handleSaveDeps = async () => {
     if (!depEdit) return;
     const links = Object.entries(depEdit.draft)
@@ -318,9 +370,15 @@ export default function ScheduleBoard() {
         dep_type: v.dep_type || 'FS',
         lag_days: Number.parseInt(v.lag_days, 10) || 0,
       }));
+    const ct = depEdit.constraintType && depEdit.constraintType !== 'NONE' ? depEdit.constraintType : null;
+    const cdRaw = Number.parseInt(depEdit.constraintDay, 10);
+    const extra = {
+      constraint_type: ct,
+      constraint_day: ct ? (Number.isFinite(cdRaw) ? Math.max(0, cdRaw) : 0) : null,
+    };
     const { taskId } = depEdit;
     setDepEdit(null);
-    await updateTaskLinks(taskId, links).catch(() => {});
+    await updateTaskLinks(taskId, links, extra).catch(() => {});
   };
 
   const handleDownloadReport = () => {
@@ -397,6 +455,97 @@ export default function ScheduleBoard() {
     border: '1px solid #ccc',
     borderRadius: '4px',
     fontSize: '13px',
+  };
+
+  // 任務表格單一列（抽出為函式，供扁平渲染 + Pro Batch B WBS 分組渲染共用）
+  const renderTaskRow = (tk) => {
+    const critical = tk.is_critical || tk.float_time === 0;
+    // Pro Batch B Feature 2：限制條件衝突（float_time < 0）以紅色 ⚠ 標示
+    const violated = Boolean(tk.constraint_violated);
+    return (
+      <tr key={tk.task_id} style={{ borderBottom: '1px solid #eee' }}>
+        <td style={{ ...tdStyle, fontWeight: 700, color: critical ? '#e74c3c' : '#2c3e50' }}>
+          {tk.task_id}
+          {violated && (
+            <span style={{ color: '#e67e22', marginLeft: '4px' }} title={t(region, 'constraintViolated')}>
+              ⚠
+            </span>
+          )}
+        </td>
+        <td style={tdStyle}>{tk.task_name}</td>
+        <td style={tdStyle}>{statusLabel(region, tk.status)}</td>
+        <td style={tdStyle}>
+          <input
+            type="number"
+            min="0"
+            readOnly={!canWrite}
+            style={{ ...inputStyle, width: '70px', ...(canWrite ? {} : { background: '#f1f1f1' }) }}
+            value={durationDrafts[tk.task_id] ?? tk.duration}
+            onChange={(e) => handleDraftChange(tk.task_id, e.target.value)}
+          />
+        </td>
+        <td style={tdStyle}>{tk.float_time}</td>
+        <td style={tdStyle}>{critical ? '🔥' : ''}</td>
+        <td style={{ ...tdStyle, color: '#666' }}>
+          {/* Batch 3：有 links 時以 PRED(類型±lag) 顯示；否則沿用 predecessors */}
+          {Array.isArray(tk.links) && tk.links.length > 0
+            ? tk.links.map((l) => linkLabel(l)).join(', ')
+            : (tk.predecessors || []).join(', ')}
+          {canWrite && (
+            <button
+              type="button"
+              style={{
+                ...btnStyle,
+                padding: '2px 8px',
+                fontSize: '11px',
+                background: '#7f8c8d',
+                marginLeft: '6px',
+              }}
+              onClick={() => openDepEditor(tk)}
+              title={t(region, 'editDependencies')}
+            >
+              {t(region, 'editDependencies')}
+            </button>
+          )}
+        </td>
+        {canWrite && (
+          <td style={tdStyle}>
+            <button
+              style={{ ...btnStyle, padding: '4px 10px', background: '#27ae60' }}
+              onClick={() => handleUpdateDuration(tk.task_id)}
+            >
+              {t(region, 'updateDuration')}
+            </button>
+          </td>
+        )}
+        {canWrite && (
+          <td style={tdStyle}>
+            <button
+              style={{ ...btnStyle, padding: '4px 10px', background: '#e74c3c' }}
+              onClick={() => handleRemoveTask(tk.task_id)}
+              title={t(region, 'deleteTask')}
+            >
+              {t(region, 'delete')}
+            </button>
+          </td>
+        )}
+      </tr>
+    );
+  };
+
+  // Pro Batch B Feature 1：WBS 群組標頭列（可收合；點擊切換 collapsedWbs）
+  const renderWbsHeaderRow = (row) => {
+    const collapsed = collapsedWbs.has(row.code);
+    return (
+      <tr key={`wbs-hdr-${row.code}`} className="wbs-group-row" onClick={() => toggleWbsGroup(row.code)}>
+        <td
+          style={{ ...tdStyle, background: '#eef1f5', fontWeight: 700, color: '#34495e' }}
+          colSpan={canWrite ? 9 : 7}
+        >
+          {collapsed ? '▶' : '▼'} {row.name || row.code}
+        </td>
+      </tr>
+    );
   };
 
   return (
@@ -518,6 +667,68 @@ export default function ScheduleBoard() {
               </button>
             </div>
             <div className="cpm-modal-body">
+              {/* ===== Pro Batch B Feature 2：限制條件（constraint_type + constraint_day） ===== */}
+              <div className="constraint-section" style={{ marginBottom: '14px' }}>
+                <div style={{ fontWeight: 700, fontSize: '12px', marginBottom: '6px', color: '#2c3e50' }}>
+                  {t(region, 'constraint')}
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select
+                    value={depEdit.constraintType}
+                    onChange={(e) =>
+                      setDepEdit((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              constraintType: e.target.value,
+                              constraintDay: e.target.value === 'NONE' ? '' : prev.constraintDay,
+                            }
+                          : prev,
+                      )
+                    }
+                    title={t(region, 'constraintType')}
+                  >
+                    <option value="NONE">{t(region, 'none')}</option>
+                    {CONSTRAINT_TYPES.map((ct) => (
+                      <option key={ct} value={ct}>
+                        {t(region, `constraint${ct}`)}
+                      </option>
+                    ))}
+                  </select>
+                  {depEdit.constraintType !== 'NONE' &&
+                    (Array.isArray(currentProject?.day_dates) && currentProject.day_dates.length > 0 ? (
+                      <input
+                        type="date"
+                        value={dayOffsetToDateStr(depEdit.constraintDay, currentProject.day_dates)}
+                        onChange={(e) =>
+                          setDepEdit((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  constraintDay: dateStrToDayOffset(e.target.value, currentProject.day_dates),
+                                }
+                              : prev,
+                          )
+                        }
+                        title={t(region, 'constraintDay')}
+                      />
+                    ) : (
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        style={{ ...inputStyle, width: '90px' }}
+                        value={depEdit.constraintDay}
+                        onChange={(e) =>
+                          setDepEdit((prev) => (prev ? { ...prev, constraintDay: e.target.value } : prev))
+                        }
+                        title={t(region, 'constraintDay')}
+                        placeholder={t(region, 'constraintDay')}
+                      />
+                    ))}
+                </div>
+              </div>
+
               {/* 標頭：前置任務 / 依賴類型 / 延滯天數 */}
               <div className="dep-popover-head">
                 <span style={{ flex: '1 1 auto' }}>{t(region, 'predecessors')}</span>
@@ -675,6 +886,7 @@ export default function ScheduleBoard() {
           >
             {[
               { key: 'schedule', label: `${t(region, 'task')} / ${t(region, 'criticalPath')}` },
+              { key: 'wbs', label: t(region, 'wbsEditor') },
               { key: 'resources', label: t(region, 'resourceLeveling') },
               { key: 'risk', label: t(region, 'riskAnalysis') },
               { key: 'progress', label: `${t(region, 'progress')} / ${t(region, 'evm')}` },
@@ -702,6 +914,9 @@ export default function ScheduleBoard() {
               );
             })}
           </div>
+
+          {/* ===== WBS 編輯器分頁（Pro Batch B Feature 1） ===== */}
+          {activeTab === 'wbs' && <WbsPanel region={region} canWrite={canWrite} />}
 
           {/* ===== 資源撫平分頁 ===== */}
           {activeTab === 'resources' && <ResourcePanel region={region} />}
@@ -738,6 +953,7 @@ export default function ScheduleBoard() {
                 baseline={baseline}
                 progress={progressMap}
                 dayDates={currentProject.day_dates || undefined}
+                wbs={wbs}
               />
             ) : (
               <div style={{ padding: '24px', textAlign: 'center', color: '#999', border: '1px dashed #ddd', borderRadius: '6px' }}>
@@ -776,73 +992,22 @@ export default function ScheduleBoard() {
                   </td>
                 </tr>
               )}
-              {tasks.map((tk) => {
-                const critical = tk.is_critical || tk.float_time === 0;
-                return (
-                  <tr key={tk.task_id} style={{ borderBottom: '1px solid #eee' }}>
-                    <td style={{ ...tdStyle, fontWeight: 700, color: critical ? '#e74c3c' : '#2c3e50' }}>
-                      {tk.task_id}
-                    </td>
-                    <td style={tdStyle}>{tk.task_name}</td>
-                    <td style={tdStyle}>{statusLabel(region, tk.status)}</td>
-                    <td style={tdStyle}>
-                      <input
-                        type="number"
-                        min="0"
-                        readOnly={!canWrite}
-                        style={{ ...inputStyle, width: '70px', ...(canWrite ? {} : { background: '#f1f1f1' }) }}
-                        value={durationDrafts[tk.task_id] ?? tk.duration}
-                        onChange={(e) => handleDraftChange(tk.task_id, e.target.value)}
-                      />
-                    </td>
-                    <td style={tdStyle}>{tk.float_time}</td>
-                    <td style={tdStyle}>{critical ? '🔥' : ''}</td>
-                    <td style={{ ...tdStyle, color: '#666' }}>
-                      {/* Batch 3：有 links 時以 PRED(類型±lag) 顯示；否則沿用 predecessors */}
-                      {Array.isArray(tk.links) && tk.links.length > 0
-                        ? tk.links.map((l) => linkLabel(l)).join(', ')
-                        : (tk.predecessors || []).join(', ')}
-                      {canWrite && (
-                        <button
-                          type="button"
-                          style={{
-                            ...btnStyle,
-                            padding: '2px 8px',
-                            fontSize: '11px',
-                            background: '#7f8c8d',
-                            marginLeft: '6px',
-                          }}
-                          onClick={() => openDepEditor(tk)}
-                          title={t(region, 'editDependencies')}
-                        >
-                          {t(region, 'editDependencies')}
-                        </button>
-                      )}
-                    </td>
-                    {canWrite && (
-                      <td style={tdStyle}>
-                        <button
-                          style={{ ...btnStyle, padding: '4px 10px', background: '#27ae60' }}
-                          onClick={() => handleUpdateDuration(tk.task_id)}
-                        >
-                          {t(region, 'updateDuration')}
-                        </button>
-                      </td>
-                    )}
-                    {canWrite && (
-                      <td style={tdStyle}>
-                        <button
-                          style={{ ...btnStyle, padding: '4px 10px', background: '#e74c3c' }}
-                          onClick={() => handleRemoveTask(tk.task_id)}
-                          title={t(region, 'deleteTask')}
-                        >
-                          {t(region, 'delete')}
-                        </button>
-                      </td>
-                    )}
-                  </tr>
-                );
-              })}
+              {/* Pro Batch B Feature 1：wbs 節點存在時分組渲染（含可收合標頭 + 未分類桶）；
+                  否則維持原本扁平渲染（flat when none）。 */}
+              {tasks.length > 0 && !hasWbsGroups && tasks.map((tk) => renderTaskRow(tk))}
+              {tasks.length > 0 &&
+                hasWbsGroups &&
+                (() => {
+                  let hideUntilNextHeader = false;
+                  return groupedTaskRows.map((row) => {
+                    if (row.type === 'header') {
+                      hideUntilNextHeader = collapsedWbs.has(row.code);
+                      return renderWbsHeaderRow(row);
+                    }
+                    if (hideUntilNextHeader) return null;
+                    return renderTaskRow(row.task);
+                  });
+                })()}
             </tbody>
           </table>
 

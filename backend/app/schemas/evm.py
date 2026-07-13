@@ -3,6 +3,7 @@
 涵蓋 Phase 9 的進度追蹤（progress tracking）與實獲值分析：
   - ProgressEntry     單一任務的進度 / 成本輸入（讀寫共用）
   - BaselineOut       專案基準線（baseline）輸出快照
+  - BaselineSummary   基準線摘要（清單端點用，不含 tasks 明細）
   - EvmRequest        EVM 計算 / 風險拋轉的請求參數
   - BaselineCreate    建立基準線的請求（選填名稱）
   - PvCurvePoint      計畫價值（PV）S 曲線上的單點
@@ -69,6 +70,7 @@ class BaselineOut(BaseModel):
     name              基準線名稱。
     project_duration  建立基準線當下的專案總工期。
     created_at        建立時間（ISO 8601 字串）。
+    is_active         是否為「使用中」基準線（Batch 5 FEAT-3）。
     tasks             基準線任務快照清單（含 es / ef / duration / budget）。
     """
 
@@ -76,7 +78,25 @@ class BaselineOut(BaseModel):
     name: str = "baseline"
     project_duration: int = 0
     created_at: str = ""
+    is_active: bool = False
     tasks: list[ProgressTask] = Field(default_factory=list)
+
+
+class BaselineSummary(BaseModel):
+    """基準線摘要（GET /projects/{pid}/baselines 清單用；不含 tasks 快照明細）。
+
+    id                基準線主鍵。
+    name              基準線名稱。
+    created_at        建立時間（ISO 8601 字串）。
+    is_active         是否為「使用中」基準線。
+    project_duration  建立基準線當下的專案總工期。
+    """
+
+    id: int
+    name: str = "baseline"
+    created_at: str = ""
+    is_active: bool = False
+    project_duration: int = 0
 
 
 # ---------------------------------------------------------------------------

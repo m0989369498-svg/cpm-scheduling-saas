@@ -345,4 +345,52 @@ export function exportPdfUrl(projectId) {
   return `${base}/projects/${encodeURIComponent(projectId)}/export.pdf`
 }
 
+// ---- Pro Batch B：WBS 階層 (work breakdown structure) ----
+
+// 取得專案 WBS 節點（扁平清單，前端以 buildWbsTree 建樹）
+// -> list[{wbs_code, name, parent_code, sort_order}]
+export async function getWbs(projectId) {
+  const res = await apiClient.get(`/projects/${encodeURIComponent(projectId)}/wbs`)
+  return res.data
+}
+
+// 儲存專案 WBS 節點（整批取代 upsert；body list[{wbs_code,name,parent_code,sort_order}]）
+// 唯一碼 / parent_code 存在 / 無循環由後端驗證（422 時 detail 經 extractError 人類可讀化）
+export async function saveWbs(projectId, list) {
+  const res = await apiClient.put(`/projects/${encodeURIComponent(projectId)}/wbs`, list)
+  return res.data
+}
+
+// ---- Pro Batch B：多重命名基準線 (multiple named baselines) ----
+
+// 列出專案所有基準線 -> list[{id,name,created_at,is_active,project_duration}]
+export async function listBaselines(projectId) {
+  const res = await apiClient.get(`/projects/${encodeURIComponent(projectId)}/baselines`)
+  return res.data
+}
+
+// 取得單一基準線完整內容（含 tasks 快照）-> BaselineOut
+export async function getBaselineById(projectId, baselineId) {
+  const res = await apiClient.get(
+    `/projects/${encodeURIComponent(projectId)}/baselines/${encodeURIComponent(baselineId)}`,
+  )
+  return res.data
+}
+
+// 設為使用中基準線（後端會原子性地清除其餘基準線的 is_active）
+export async function activateBaseline(projectId, baselineId) {
+  const res = await apiClient.post(
+    `/projects/${encodeURIComponent(projectId)}/baselines/${encodeURIComponent(baselineId)}/activate`,
+  )
+  return res.data
+}
+
+// 刪除基準線（若刪除的是使用中基準線，後端會自動將最新剩餘者設為使用中）
+export async function deleteBaseline(projectId, baselineId) {
+  const res = await apiClient.delete(
+    `/projects/${encodeURIComponent(projectId)}/baselines/${encodeURIComponent(baselineId)}`,
+  )
+  return res.data
+}
+
 export default apiClient

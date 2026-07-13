@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { t } from '../i18n';
+import { groupTasksByWbs } from '../utils/wbsTree.js';
 
 /**
  * GanttChart 甘特圖 / 工期條形圖
@@ -27,6 +28,15 @@ import { t } from '../i18n';
  *       提供時：日刻度表頭改顯示 MM/DD（每 2 欄一筆避免擁擠；每月 1 日加粗標記），
  *       刻度與條形 tooltip 顯示實際日期（計畫開工/計畫完工）。
  *       未提供時維持原本「天數」刻度渲染。
+ *   wbs? : list[{wbs_code,name,parent_code,sort_order}]   (選用，Pro Batch B WBS 階層)
+ *       提供時（非空陣列）：以 groupTasksByWbs 依 WBS 樹形（前序展開）將任務列分組，
+ *       插入「群組標頭列」（淡灰底、無條形，橫跨整個時間軸寬度）；無 wbs_code 或
+ *       指向不存在節點的任務歸入「未分類」群組（置於最後）。所有既有功能
+ *       （依賴箭頭/日期軸/基準線/進度填色/拖曳）在分組後依然作用於各任務列。
+ *       未提供或空陣列時維持原本扁平渲染（不插入標頭列）。
+ *
+ *   限制違反標記（Pro Batch B Feature 2）：task.constraint_violated 為真時，
+ *   於條形右上角疊加紅色 ⚠ 徽章，並於左側標籤 task_id 旁同步標示。
  *
  *   依賴箭頭（Batch 3）：當任務帶有 links（[{predecessor_task_id, dep_type, lag_days}]）
  *   或 predecessors（視為 FS+0）時，以絕對定位 SVG 覆蓋層繪製肘形連接線：
@@ -85,6 +95,7 @@ export default function GanttChart({
   baseline,
   progress,
   dayDates,
+  wbs,
 }) {
   const draggable = typeof onTaskDurationChange === 'function';
 
@@ -220,14 +231,22 @@ export default function GanttChart({
   // 每 k 欄顯示一筆 MM/DD 避免擁擠（DAY_WIDTH=30px 下 2 欄一筆恰好）
   const DATE_LABEL_EVERY = 2;
 
+  // ---- Pro Batch B：WBS 分組列（wbs 提供且非空時啟用；否則回傳純任務扁平列表，
+  // 行為與分組前完全相同）----
+  const rows = groupTasksByWbs(tasks, wbs, t(region, 'uncategorized'));
+  const totalRows = rows.length;
+
   // ---- Batch 3：依賴箭頭（elbow connector）資料 ----
   // 錨點：FS/FF 起於 pred.ef*30（條形結束）；SS/SF 起於 pred.es*30（條形開始）。
   // 終點：FS/SS 至 succ 條形開始（es*30）；FF/SF 至 succ 條形結束（ef*30）。
-  const rowIndexById = {};
+  // rowIndexById 的 y 座標須依「實際渲染列」（含 WBS 標頭列）計算，而非純任務索引。
   const taskById = {};
-  tasks.forEach((tk, i) => {
-    rowIndexById[tk.task_id] = i;
+  tasks.forEach((tk) => {
     taskById[tk.task_id] = tk;
+  });
+  const rowIndexById = {};
+  rows.forEach((row, i) => {
+    if (row.type === 'task') rowIndexById[row.task.task_id] = i;
   });
   const connectors = [];
   tasks.forEach((succ) => {
@@ -340,13 +359,13 @@ export default function GanttChart({
             className="gantt-dep-arrows"
             aria-hidden="true"
             width={chartWidth}
-            height={tasks.length * ROW_HEIGHT}
+            height={totalRows * ROW_HEIGHT}
             style={{
               position: 'absolute',
               top: 0,
               left: LABEL_WIDTH,
               width: chartWidth,
-              height: tasks.length * ROW_HEIGHT,
+              height: totalRows * ROW_HEIGHT,
               pointerEvents: 'none',
               zIndex: 4,
               overflow: 'visible',
@@ -410,7 +429,7 @@ export default function GanttChart({
                   top: 0,
                   left: LABEL_WIDTH + d * DAY_WIDTH,
                   width: DAY_WIDTH,
-                  height: tasks.length * ROW_HEIGHT,
+                  height: totalRows * ROW_HEIGHT,
                   background: 'rgba(231, 76, 60, 0.16)',
                   borderLeft: '1px dashed rgba(192, 57, 43, 0.55)',
                   borderRight: '1px dashed rgba(192, 57, 43, 0.55)',
@@ -420,7 +439,44 @@ export default function GanttChart({
                 title={`${t(region, 'overCapacity')} · ${t(region, 'day')} ${d}`}
               />
             ))}
-        {tasks.map((task, idx) => {
+        {rows.map((row, idx) => {
+          // Pro Batch B：WBS 群組標頭列（淡灰底、無條形，橫跨整個時間軸寬度）
+          if (row.type === 'header') {
+            return (
+              <div
+                key={`wbs-hdr-${row.code}-${idx}`}
+                className="gantt-wbs-header"
+                style={{
+                  display: 'flex',
+                  height: ROW_HEIGHT,
+                  borderBottom: '1px solid #e4e7eb',
+                  background: '#eef1f5',
+                }}
+              >
+                <div
+                  style={{
+                    width: LABEL_WIDTH,
+                    minWidth: LABEL_WIDTH,
+                    flex: `0 0 ${LABEL_WIDTH}px`,
+                    padding: '4px 8px',
+                    boxSizing: 'border-box',
+                    borderRight: '1px solid #ddd',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    color: '#34495e',
+                    overflow: 'hidden',
+                    whiteSpace: 'nowrap',
+                    textOverflow: 'ellipsis',
+                  }}
+                  title={row.name || row.code}
+                >
+                  {row.name || row.code}
+                </div>
+                <div style={{ flex: `0 0 ${chartWidth}px`, width: chartWidth, minWidth: chartWidth }} />
+              </div>
+            );
+          }
+          const task = row.task;
           const critical = isCritical(task);
           const es = Number(task.es) || 0;
           const duration = Number(task.duration) || 0;
@@ -460,6 +516,10 @@ export default function GanttChart({
               ? ` | ${t(region, 'plannedStart')} ${startIso} | ${t(region, 'plannedFinish')} ${finishIso}`
               : '';
 
+          // Pro Batch B Feature 2：限制條件衝突（float_time < 0）—
+          // 於左側標籤旁 + 條形右上角疊加紅色 ⚠ 徽章。
+          const violated = Boolean(task.constraint_violated);
+
           return (
             <div
               key={task.task_id || idx}
@@ -489,6 +549,11 @@ export default function GanttChart({
                 <span style={{ fontWeight: 700, color: critical ? '#e74c3c' : '#2c3e50' }}>
                   {task.task_id}
                 </span>{' '}
+                {violated && (
+                  <span style={{ color: '#e67e22' }} title={t(region, 'constraintViolated')}>
+                    ⚠
+                  </span>
+                )}{' '}
                 <span style={{ color: '#666' }}>{task.task_name}</span>
               </div>
 
@@ -539,7 +604,7 @@ export default function GanttChart({
                 <div
                   className={`gantt-bar ${critical ? 'critical' : 'normal'}${
                     isDragging ? ' dragging' : ''
-                  }${behindSchedule ? ' behind' : ''}`}
+                  }${behindSchedule ? ' behind' : ''}${violated ? ' violated' : ''}`}
                   style={{
                     position: 'absolute',
                     left: barLeft,
@@ -567,8 +632,8 @@ export default function GanttChart({
                   )} | ES ${es} EF ${task.ef} | ${t(region, 'floatTime')}: ${task.float_time}${dateTip}${
                     hasPct ? ` | ${t(region, 'percentComplete')}: ${pct}%` : ''
                   }${behindSchedule ? ` | ${t(region, 'behindSchedule')}` : ''}${
-                    draggable ? ` | ${t(region, 'dragHint')}` : ''
-                  }`}
+                    violated ? ` | ⚠ ${t(region, 'constraintViolated')}` : ''
+                  }${draggable ? ` | ${t(region, 'dragHint')}` : ''}`}
                 >
                   {/* Phase 9：完成百分比填色（較深色，自左填入），未提供 progress 時不繪 */}
                   {hasPct && !isDragging && (
@@ -610,6 +675,26 @@ export default function GanttChart({
                     />
                   )}
                 </div>
+
+                {/* Pro Batch B Feature 2：限制條件衝突徽章（條形右上角，紅色 ⚠） */}
+                {violated && !isDragging && (
+                  <span
+                    className="gantt-constraint-violated"
+                    aria-hidden="true"
+                    style={{
+                      position: 'absolute',
+                      left: barLeft + barWidth - 6,
+                      top: (ROW_HEIGHT - BAR_HEIGHT) / 2 - 8,
+                      fontSize: '13px',
+                      color: '#e67e22',
+                      zIndex: 5,
+                      pointerEvents: 'none',
+                    }}
+                    title={t(region, 'constraintViolated')}
+                  >
+                    ⚠
+                  </span>
+                )}
 
                 {/* 拖曳即時預覽標籤：N 天/天 */}
                 {isDragging && (
@@ -697,6 +782,14 @@ export default function GanttChart({
               }}
             />
             {t(region, 'percentComplete')}
+          </span>
+        )}
+
+        {/* Pro Batch B Feature 2：限制條件衝突圖例（僅有任一任務違反時顯示） */}
+        {tasks.some((tk) => tk.constraint_violated) && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ color: '#e67e22', fontSize: '14px' }}>⚠</span>
+            {t(region, 'constraintViolated')}
           </span>
         )}
       </div>

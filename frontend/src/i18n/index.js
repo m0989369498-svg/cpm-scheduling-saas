@@ -146,6 +146,31 @@ export const I18N = {
     // ---- Batch 4：範圍化載入/錯誤 + 工作階段復原 ----
     sessionExpired: '登入階段已逾期，請重新登入',
     recalculating: '重新計算中…',
+    // ---- Pro Batch B · Feature 1：WBS 階層 ----
+    wbs: '工作分解結構 (WBS)',
+    wbsCode: 'WBS 編碼',
+    wbsName: 'WBS 名稱',
+    wbsParent: '上層節點',
+    wbsEditor: 'WBS 編輯器',
+    uncategorized: '未分類',
+    addWbsRow: '新增 WBS 列',
+    // ---- Pro Batch B · Feature 2：活動限制 (P6-style constraints) ----
+    constraint: '限制條件',
+    constraintType: '限制類型',
+    constraintDay: '限制日',
+    constraintViolated: '限制衝突',
+    constraintSNET: '不早於開始 (SNET)',
+    constraintSNLT: '不遲於開始 (SNLT)',
+    constraintFNET: '不早於完成 (FNET)',
+    constraintFNLT: '不遲於完成 (FNLT)',
+    constraintMSO: '強制開始 (MSO)',
+    constraintMFO: '強制完成 (MFO)',
+    // ---- Pro Batch B · Feature 3：多重命名基準線 ----
+    baselines: '基準線清單',
+    baselineName: '基準線名稱',
+    activeBaseline: '使用中基準線',
+    setActive: '設為使用中',
+    deleteBaseline: '刪除基準線',
     statuses: {
       PENDING: '待辦',
       IN_PROGRESS: '進行中',
@@ -297,6 +322,31 @@ export const I18N = {
     // ---- Batch 4：范围化加载/错误 + 会话恢复 ----
     sessionExpired: '登录会话已过期，请重新登录',
     recalculating: '重新计算中…',
+    // ---- Pro Batch B · Feature 1：WBS 层级 ----
+    wbs: '工作分解结构 (WBS)',
+    wbsCode: 'WBS 编码',
+    wbsName: 'WBS 名称',
+    wbsParent: '上层节点',
+    wbsEditor: 'WBS 编辑器',
+    uncategorized: '未分类',
+    addWbsRow: '新增 WBS 行',
+    // ---- Pro Batch B · Feature 2：活动约束 (P6-style constraints) ----
+    constraint: '约束条件',
+    constraintType: '约束类型',
+    constraintDay: '约束日',
+    constraintViolated: '约束冲突',
+    constraintSNET: '不早于开始 (SNET)',
+    constraintSNLT: '不迟于开始 (SNLT)',
+    constraintFNET: '不早于完成 (FNET)',
+    constraintFNLT: '不迟于完成 (FNLT)',
+    constraintMSO: '强制开始 (MSO)',
+    constraintMFO: '强制完成 (MFO)',
+    // ---- Pro Batch B · Feature 3：多重命名基准线 ----
+    baselines: '基准线列表',
+    baselineName: '基准线名称',
+    activeBaseline: '使用中基准线',
+    setActive: '设为使用中',
+    deleteBaseline: '删除基准线',
     statuses: {
       PENDING: '待办',
       IN_PROGRESS: '进行中',

@@ -41,7 +41,7 @@ from app.deps import TenantContext, get_db, verify_tenant
 from app.models.orm import SyncEvent
 from app.routers.progress import (
     _baseline_tasks_for_evm,
-    _load_latest_baseline,
+    _load_active_baseline,
     _load_progress,
     _progress_map_for_evm,
 )
@@ -77,7 +77,8 @@ async def _gather_export_context(
     project_out = await get_project(project_id, ctx=ctx, db=db)
 
     evm: EvmResult | None = None
-    baseline = await _load_latest_baseline(db, project_id)
+    # Batch 5 FEAT-3：與 GET /evm / dashboard Q3 一致的 active-else-latest 規則。
+    baseline = await _load_active_baseline(db, project_id)
     if baseline is not None:
         baseline_tasks = _baseline_tasks_for_evm(baseline)
         progress = await _progress_map_for_evm(db, project_id)
@@ -161,12 +162,19 @@ def _build_xlsx(
     # Batch 3 (FEAT-2)：專案有開工日期 (day_dates) 時加入 開工/完工 日期欄。
     has_dates = bool(project_out.day_dates)
 
+    # Batch 5 (FEAT-1)：依 (wbs_code, task_id) 排序 (未分類 "" 排最前)，
+    # 使匯出結果依 WBS 分組呈現 (不影響 project_out.tasks 本身順序)。
+    sorted_tasks = sorted(
+        project_out.tasks, key=lambda tk: (tk.wbs_code or "", tk.task_id)
+    )
+
     wb = Workbook()
 
     # ---- Tasks 工作表 ----
     ws = wb.active
     ws.title = "Tasks"
     headers = [
+        "wbs_code",
         "task_id",
         "name",
         "duration",
@@ -192,7 +200,7 @@ def _build_xlsx(
         cell.font = header_font
         cell.fill = header_fill
 
-    for task in project_out.tasks:
+    for task in sorted_tasks:
         tid = task.task_id
         evm_row = evm_by_task.get(tid)
         prog = prog_by_task.get(tid)
@@ -214,6 +222,7 @@ def _build_xlsx(
             ac_val = None
 
         row = [
+            task.wbs_code or "",
             tid,
             task.task_name or "",
             int(task.duration or 0),
@@ -239,7 +248,7 @@ def _build_xlsx(
     # 高亮要徑列 (紅底白字)。
     crit_fill = PatternFill("solid", fgColor="E74C3C")
     crit_font = Font(color="FFFFFF")
-    for row_idx, task in enumerate(project_out.tasks, start=2):
+    for row_idx, task in enumerate(sorted_tasks, start=2):
         if task.is_critical:
             for col_idx in range(1, len(headers) + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)
@@ -369,7 +378,12 @@ def _build_pdf(
     # ---- 排程任務表 ----
     # Batch 3 (FEAT-2)：專案有開工日期 (day_dates) 時加入 計畫開工/完工 日期欄。
     has_dates = bool(project_out.day_dates)
+    # Batch 5 (FEAT-1)：依 (wbs_code, task_id) 排序 (未分類 "" 排最前)。
+    sorted_tasks = sorted(
+        project_out.tasks, key=lambda tk: (tk.wbs_code or "", tk.task_id)
+    )
     header = [
+        Paragraph(t(region, "wbsCode"), cell_style),
         Paragraph(t(region, "taskId"), cell_style),
         Paragraph(t(region, "taskName"), cell_style),
         Paragraph(t(region, "duration"), cell_style),
@@ -387,10 +401,11 @@ def _build_pdf(
         ]
     rows: list[list] = [header]
     critical_row_indexes: list[int] = []
-    for idx, task in enumerate(project_out.tasks, start=1):
+    for idx, task in enumerate(sorted_tasks, start=1):
         if task.is_critical:
             critical_row_indexes.append(idx)
         row = [
+            Paragraph(str(task.wbs_code or "-"), cell_style),
             Paragraph(str(task.task_id), cell_style),
             Paragraph(str(task.task_name or ""), cell_style),
             Paragraph(str(int(task.duration or 0)), cell_style),
@@ -413,13 +428,13 @@ def _build_pdf(
     if has_dates:
         # 日期雙欄需要寬度 —— 壓縮名稱欄與數值欄，總寬維持在版心內。
         col_widths = [
-            18 * mm, 30 * mm, 12 * mm, 10 * mm, 10 * mm, 10 * mm, 10 * mm,
-            14 * mm, 12 * mm, 25 * mm, 25 * mm,
+            14 * mm, 16 * mm, 26 * mm, 12 * mm, 10 * mm, 10 * mm, 10 * mm, 10 * mm,
+            12 * mm, 12 * mm, 22 * mm, 22 * mm,
         ]
     else:
         col_widths = [
-            20 * mm, 44 * mm, 16 * mm, 14 * mm, 14 * mm, 14 * mm, 14 * mm,
-            20 * mm, 18 * mm,
+            16 * mm, 18 * mm, 38 * mm, 16 * mm, 14 * mm, 14 * mm, 14 * mm, 14 * mm,
+            18 * mm, 16 * mm,
         ]
     table = Table(rows, colWidths=col_widths, repeatRows=1)
     style_cmds = [
@@ -428,7 +443,8 @@ def _build_pdf(
         ("FONTNAME", (0, 0), (-1, -1), font),
         ("FONTSIZE", (0, 0), (-1, -1), 8.5),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+        # Batch 5：新增 wbs_code 欄 (index 0) 使 duration 起的數值欄後移至 index 3。
+        ("ALIGN", (3, 0), (-1, -1), "CENTER"),
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#bdc3c7")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f7fa")]),
         ("TOPPADDING", (0, 0), (-1, -1), 3),

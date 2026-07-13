@@ -5,8 +5,12 @@
   PUT  /projects/{pid}/progress       upsert 各任務進度 (per (project_id, task_id))。
   POST /projects/{pid}/baseline       由 _load_tasks -> calculate_cpm 取得 es/ef/duration,
                                       budget 取自 task_progress (預設 0), 存成 snapshot 並回傳。
-  GET  /projects/{pid}/baseline       取最新基準線 (max created_at / max id); 無則 404。
-  GET  /projects/{pid}/evm            以最新基準線計算 EVM (唯讀, 無副作用); 無基準線回 409。
+  GET  /projects/{pid}/baseline       取「使用中」基準線 (active-else-latest); 無則 404。
+  GET  /projects/{pid}/baselines      列出所有基準線摘要 (Batch 5 FEAT-3)。
+  GET  /projects/{pid}/baselines/{bid}          單一基準線完整內容。
+  POST /projects/{pid}/baselines/{bid}/activate 設為使用中 (原子清除其餘)。
+  DELETE /projects/{pid}/baselines/{bid}        刪除; 刪到使用中者自動遞補最新。
+  GET  /projects/{pid}/evm            以使用中基準線計算 EVM (唯讀, 無副作用); 無基準線回 409。
   POST /projects/{pid}/evm/alert      重算 EVM; 若 risk_flagged 則拋轉風險預警 (risk_listener)。
 
 設計重點:
@@ -26,7 +30,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import audit, risk_listener
@@ -42,7 +46,7 @@ from app.routers.projects import (
     _load_tasks,
     version_conflict_response,
 )
-from app.schemas.evm import BaselineOut, EvmResult, ProgressEntry
+from app.schemas.evm import BaselineOut, BaselineSummary, EvmResult, ProgressEntry
 
 logger = logging.getLogger("cpm.routers.progress")
 
@@ -80,17 +84,48 @@ def _progress_to_schema(row: TaskProgress) -> ProgressEntry:
     )
 
 
-async def _load_latest_baseline(
+async def _load_active_baseline(
     db: AsyncSession, project_id: str
 ) -> ProjectBaseline | None:
-    """取得最新基準線 (max created_at, 同時間以 max id 決勝); 無則回 None。"""
+    """取得「使用中」基準線 (Batch 5 FEAT-3 active-else-latest 規則)。
+
+    單一 ORDER BY 即同時涵蓋兩種情形：
+      - 存在 is_active=true 的列 -> 排最前，優先回傳。
+      - 全數 is_active=false (剛遷移的既有資料 / 尚未設定) -> 退回「最新」
+        (max created_at, 同時間以 max id 決勝)，語義與 Batch 3 版本一致
+        (向下相容)。
+    無任何基準線回 None。
+    """
     result = await db.execute(
         select(ProjectBaseline)
         .where(ProjectBaseline.project_id == project_id)
-        .order_by(ProjectBaseline.created_at.desc(), ProjectBaseline.id.desc())
+        .order_by(
+            ProjectBaseline.is_active.desc(),
+            ProjectBaseline.created_at.desc(),
+            ProjectBaseline.id.desc(),
+        )
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def _get_baseline_or_404(
+    db: AsyncSession, project_id: str, baseline_id: int
+) -> ProjectBaseline:
+    """取得專案內指定 id 的基準線，找不到回 404。"""
+    result = await db.execute(
+        select(ProjectBaseline).where(
+            ProjectBaseline.project_id == project_id,
+            ProjectBaseline.id == baseline_id,
+        )
+    )
+    baseline = result.scalar_one_or_none()
+    if baseline is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Baseline '{baseline_id}' not found for project '{project_id}'",
+        )
+    return baseline
 
 
 def _baseline_to_schema(row: ProjectBaseline) -> BaselineOut:
@@ -103,6 +138,19 @@ def _baseline_to_schema(row: ProjectBaseline) -> BaselineOut:
         project_duration=int(snapshot.get("project_duration", 0)),
         created_at=row.created_at.isoformat() if row.created_at is not None else "",
         tasks=tasks,
+        is_active=bool(row.is_active),
+    )
+
+
+def _baseline_to_summary(row: ProjectBaseline) -> BaselineSummary:
+    """ORM -> BaselineSummary（GET /baselines 清單用；不含 tasks 快照明細）。"""
+    snapshot = row.snapshot or {}
+    return BaselineSummary(
+        id=int(row.id),
+        name=row.name,
+        created_at=row.created_at.isoformat() if row.created_at is not None else "",
+        is_active=bool(row.is_active),
+        project_duration=int(snapshot.get("project_duration", 0)),
     )
 
 
@@ -298,11 +346,20 @@ async def create_baseline(
 
     snapshot = {"project_duration": int(duration), "tasks": snapshot_tasks}
 
+    # Batch 5 FEAT-3：新基準線成為「使用中」—— 原子清除同專案其餘 is_active，
+    # 新列以 is_active=True 建立 (同一交易內, 與既有列的清除同時提交)。
+    await db.execute(
+        sa_update(ProjectBaseline)
+        .where(ProjectBaseline.project_id == project_id)
+        .values(is_active=False)
+    )
+
     baseline = ProjectBaseline(
         project_id=project_id,
         tenant_id=ctx.tenant_id,
         name=name,
         snapshot=snapshot,
+        is_active=True,
     )
     db.add(baseline)
     await db.flush()
@@ -352,15 +409,132 @@ async def get_baseline(
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
 ) -> BaselineOut:
-    """取得最新 (作用中) 基準線; 若無任何基準線回 404。"""
+    """取得使用中基準線 (active-else-latest；Batch 5 FEAT-3); 若無任何基準線回 404。"""
     await _get_project_or_404(db, project_id, ctx.tenant_id)
-    baseline = await _load_latest_baseline(db, project_id)
+    baseline = await _load_active_baseline(db, project_id)
     if baseline is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No baseline found for project '{project_id}'",
         )
     return _baseline_to_schema(baseline)
+
+
+@router.get("/{project_id}/baselines", response_model=list[BaselineSummary])
+async def list_baselines(
+    project_id: str,
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+) -> list[BaselineSummary]:
+    """列出專案所有基準線摘要 (使用中優先, 其餘依建立時間新到舊)。"""
+    await _get_project_or_404(db, project_id, ctx.tenant_id)
+    result = await db.execute(
+        select(ProjectBaseline)
+        .where(ProjectBaseline.project_id == project_id)
+        .order_by(
+            ProjectBaseline.is_active.desc(),
+            ProjectBaseline.created_at.desc(),
+            ProjectBaseline.id.desc(),
+        )
+    )
+    rows = list(result.scalars().all())
+    return [_baseline_to_summary(r) for r in rows]
+
+
+@router.get("/{project_id}/baselines/{baseline_id}", response_model=BaselineOut)
+async def get_baseline_by_id(
+    project_id: str,
+    baseline_id: int,
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+) -> BaselineOut:
+    """取得專案內指定 id 的完整基準線 (含 tasks 快照)；找不到回 404。"""
+    await _get_project_or_404(db, project_id, ctx.tenant_id)
+    baseline = await _get_baseline_or_404(db, project_id, baseline_id)
+    return _baseline_to_schema(baseline)
+
+
+@router.post(
+    "/{project_id}/baselines/{baseline_id}/activate", response_model=BaselineOut
+)
+async def activate_baseline(
+    project_id: str,
+    baseline_id: int,
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
+) -> BaselineOut:
+    """將指定基準線設為「使用中」，原子清除同專案其餘 is_active（editor+）。"""
+    await _get_project_or_404(db, project_id, ctx.tenant_id)
+    baseline = await _get_baseline_or_404(db, project_id, baseline_id)
+
+    await db.execute(
+        sa_update(ProjectBaseline)
+        .where(ProjectBaseline.project_id == project_id)
+        .values(is_active=False)
+    )
+    baseline.is_active = True
+    await db.flush()
+    await db.refresh(baseline)
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "BASELINE_ACTIVATE",
+            {"project_id": project_id, "baseline_id": baseline_id, "name": baseline.name},
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit BASELINE_ACTIVATE failed (ignored): %s", exc)
+
+    return _baseline_to_schema(baseline)
+
+
+@router.delete("/{project_id}/baselines/{baseline_id}")
+async def delete_baseline(
+    project_id: str,
+    baseline_id: int,
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+    _role: None = Depends(require_role("editor")),
+) -> dict:
+    """刪除指定基準線（editor+）；若刪除的是使用中者，自動將剩餘最新的一條設為使用中。"""
+    await _get_project_or_404(db, project_id, ctx.tenant_id)
+    baseline = await _get_baseline_or_404(db, project_id, baseline_id)
+    was_active = bool(baseline.is_active)
+    name = baseline.name
+
+    await db.delete(baseline)
+    await db.flush()
+
+    activated_id: int | None = None
+    if was_active:
+        # 刪除後已無任何列標記 is_active=true -> _load_active_baseline 的
+        # active-else-latest 規則會自然退回「剩餘最新者」，據此自動接手。
+        remaining = await _load_active_baseline(db, project_id)
+        if remaining is not None:
+            remaining.is_active = True
+            await db.flush()
+            activated_id = int(remaining.id)
+
+    # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
+    try:
+        await audit.log_action(
+            db,
+            ctx,
+            "BASELINE_DELETE",
+            {
+                "project_id": project_id,
+                "baseline_id": baseline_id,
+                "name": name,
+                "auto_activated_id": activated_id,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
+        logger.warning("audit BASELINE_DELETE failed (ignored): %s", exc)
+
+    return {"ok": True, "activated_id": activated_id}
 
 
 # ---------------------------------------------------------------------------
@@ -378,12 +552,13 @@ async def get_evm(
 ) -> EvmResult:
     """計算 EVM (實獲值) —— 唯讀, 無任何副作用。
 
-    以最新基準線為計畫基準, 進度取自 task_progress。data_date 省略時預設為基準線
-    專案總工期。無基準線回 409 (需先建立基準線)。
+    以使用中基準線 (active-else-latest；Batch 5 FEAT-3) 為計畫基準, 進度取自
+    task_progress。data_date 省略時預設為該基準線專案總工期。無基準線回 409
+    (需先建立基準線)。
     """
     await _get_project_or_404(db, project_id, ctx.tenant_id)
 
-    baseline = await _load_latest_baseline(db, project_id)
+    baseline = await _load_active_baseline(db, project_id)
     if baseline is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -423,7 +598,7 @@ async def dispatch_evm_alert(
     """
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
 
-    baseline = await _load_latest_baseline(db, project_id)
+    baseline = await _load_active_baseline(db, project_id)
     if baseline is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

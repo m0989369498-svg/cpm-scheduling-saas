@@ -9,8 +9,10 @@
       Q1 本租戶專案 (deleted_at IS NULL，選配 limit/offset 分頁)。
       Q2 任務彙總 GROUP BY project_id: COUNT(*) / MAX(ef) /
          SUM(CASE WHEN is_critical THEN 1 ELSE 0 END)。
-      Q3 每專案最新基準線: ROW_NUMBER() OVER (PARTITION BY project_id
-         ORDER BY created_at DESC, id DESC) == 1 (sqlite>=3.25 / postgres 皆可)。
+      Q3 每專案使用中基準線 (Batch 5 FEAT-3 active-else-latest): ROW_NUMBER()
+         OVER (PARTITION BY project_id
+               ORDER BY is_active DESC, created_at DESC, id DESC) == 1
+         (sqlite>=3.25 / postgres 皆可)。
       Q4 task_progress 列 (僅查有基準線的專案; IN 子句)。
       Q5 待處理風險預警計數 GROUP BY sync_event_log.project_id
          (PERF-3 新增欄位 + 複合索引, 不再掃描 payload JSON)。
@@ -149,12 +151,17 @@ async def get_dashboard(
         for row in agg_result.all()
     }
 
-    # ---- Q3: 每專案最新基準線 (ROW_NUMBER 視窗函式; sqlite>=3.25 / postgres) ----
+    # ---- Q3: 每專案使用中基準線 (Batch 5 FEAT-3 active-else-latest；
+    #          ROW_NUMBER 視窗函式; sqlite>=3.25 / postgres) ----
+    #   is_active DESC 優先取「使用中」者；全 false (剛遷移的既有列) 時
+    #   退回 created_at/id 最新者 —— 與 progress._load_active_baseline /
+    #   GET /evm 同一規則 (向下相容)。
     rn = (
         func.row_number()
         .over(
             partition_by=ProjectBaseline.project_id,
             order_by=(
+                ProjectBaseline.is_active.desc(),
                 ProjectBaseline.created_at.desc(),
                 ProjectBaseline.id.desc(),
             ),
