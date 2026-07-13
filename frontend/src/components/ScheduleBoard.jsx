@@ -8,6 +8,7 @@ import ResourcePanel from './ResourcePanel';
 import RiskPanel from './RiskPanel';
 import ProgressPanel from './ProgressPanel';
 import WbsPanel from './WbsPanel';
+import { FieldPhotoThumb } from './FieldMode.jsx';
 import { groupTasksByWbs } from '../utils/wbsTree.js';
 
 /**
@@ -90,6 +91,7 @@ export default function ScheduleBoard() {
     progress,
     wbs,
     importReport,
+    photosByTask,
     setTenant,
     setRegion,
     loadProjects,
@@ -106,6 +108,9 @@ export default function ScheduleBoard() {
     clearError,
     importProject,
     clearImportReport,
+    loadTaskPhotos,
+    deleteTaskPhoto,
+    qrUrl,
   } = store;
 
   // Batch 4：scoped 載入/錯誤 — 全域頂部狀態列僅顯示 project/projects scope；
@@ -149,6 +154,8 @@ export default function ScheduleBoard() {
   const importInputRef = useRef(null);
   // Pro Batch A：匯入報告橫幅是否已由使用者關閉（每次收到新報告時重新顯示）
   const [importReportDismissed, setImportReportDismissed] = useState(false);
+  // Pro Batch C：照片燈箱開啟中的目標任務 task_id（null = 關閉）
+  const [photoLightbox, setPhotoLightbox] = useState(null);
 
   // 掛載時載入專案清單
   useEffect(() => {
@@ -491,6 +498,54 @@ export default function ScheduleBoard() {
     }
   };
 
+  // ---- Pro Batch C：任務照片燈箱 + QR 深連結 + 進入現場模式 ----
+
+  // 開啟照片燈箱：即時（lazy）載入該任務照片清單，展開徽章計數 + 燈箱內容。
+  const handleOpenPhotos = (taskId) => {
+    setPhotoLightbox(taskId);
+    loadTaskPhotos(taskId).catch(() => {});
+  };
+
+  // 刪除燈箱內某張照片（editor+；store.deleteTaskPhoto 已限制角色，403 由 errors.photos 顯示）
+  const handleDeleteLightboxPhoto = async (taskId, photoId) => {
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(t(region, 'confirmDeletePhoto'))) return;
+    await deleteTaskPhoto(taskId, photoId).catch(() => {});
+  };
+
+  // 顯示/列印任務 QR 深連結：以 Authorization 標頭驗證抓取 PNG -> 物件 URL -> 新分頁開啟
+  // （同 downloadWithAuth 驗證模式；QR 端點唯讀，viewer 亦可使用）。
+  const handleShowQr = async (taskId) => {
+    if (!currentProject?.project_id) return;
+    try {
+      const url = qrUrl(taskId);
+      const headers = { 'X-Tenant-Id': tenantId, 'X-Region': region };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      window.open(objUrl, '_blank');
+    } catch (e) {
+      // eslint-disable-next-line no-alert
+      window.alert(`${t(region, 'error')}: ${e && e.message ? e.message : e}`);
+    }
+  };
+
+  // 進入現場模式：以新分頁開啟 "?field=1&project={pid}"（行動裝置友善的精簡介面）。
+  const handleEnterFieldMode = () => {
+    if (!currentProject?.project_id) return;
+    try {
+      const url = new URL(window.location.href);
+      url.search = '';
+      url.searchParams.set('field', '1');
+      url.searchParams.set('project', currentProject.project_id);
+      window.open(url.toString(), '_blank');
+    } catch (e) {
+      /* URL 建構失敗（非瀏覽器環境等）：靜默略過 */
+    }
+  };
+
   // ---- 樣式 ----
   const btnStyle = {
     padding: '6px 14px',
@@ -560,6 +615,33 @@ export default function ScheduleBoard() {
             </button>
           )}
         </td>
+        {/* Pro Batch C：照片徽章（lazy-load — 首次點擊才呼叫 loadTaskPhotos 取得計數） */}
+        <td style={tdStyle}>
+          <button
+            type="button"
+            style={{
+              ...btnStyle,
+              padding: '2px 8px',
+              fontSize: '11px',
+              background: (photosByTask[tk.task_id] || []).length > 0 ? '#16a085' : '#95a5a6',
+            }}
+            onClick={() => handleOpenPhotos(tk.task_id)}
+            title={t(region, 'photos')}
+          >
+            📷 {photosByTask[tk.task_id] ? photosByTask[tk.task_id].length : ''}
+          </button>
+        </td>
+        {/* Pro Batch C：QR 深連結（唯讀，viewer 亦可） */}
+        <td style={tdStyle}>
+          <button
+            type="button"
+            style={{ ...btnStyle, padding: '2px 8px', fontSize: '11px', background: '#34495e' }}
+            onClick={() => handleShowQr(tk.task_id)}
+            title={t(region, 'qrCode')}
+          >
+            QR
+          </button>
+        </td>
         {canWrite && (
           <td style={tdStyle}>
             <button
@@ -592,7 +674,7 @@ export default function ScheduleBoard() {
       <tr key={`wbs-hdr-${row.code}`} className="wbs-group-row" onClick={() => toggleWbsGroup(row.code)}>
         <td
           style={{ ...tdStyle, background: '#eef1f5', fontWeight: 700, color: '#34495e' }}
-          colSpan={canWrite ? 9 : 7}
+          colSpan={canWrite ? 11 : 9}
         >
           {collapsed ? '▶' : '▼'} {row.name || row.code}
         </td>
@@ -665,6 +747,21 @@ export default function ScheduleBoard() {
             ))}
           </select>
         </div>
+
+        {/* Pro Batch C：進入現場模式（新分頁開啟 ?field=1&project=；唯讀亦可，不受 canWrite 限制） */}
+        {currentProject?.project_id && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <label style={{ fontSize: '12px', color: '#666' }}>&nbsp;</label>
+            <button
+              type="button"
+              style={{ ...btnStyle, background: '#16a085' }}
+              onClick={handleEnterFieldMode}
+              title={t(region, 'enterFieldMode')}
+            >
+              📱 {t(region, 'enterFieldMode')}
+            </button>
+          </div>
+        )}
 
         {/* 新增專案（viewer 隱藏） */}
         {canWrite && (
@@ -917,6 +1014,53 @@ export default function ScheduleBoard() {
         </div>
       )}
 
+      {/* ===== Pro Batch C：任務照片燈箱（lazy-loaded 於徽章點擊時） ===== */}
+      {photoLightbox && (
+        <div
+          className="cpm-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={() => setPhotoLightbox(null)}
+        >
+          <div className="cpm-modal" style={{ maxWidth: '640px' }} onMouseDown={(e) => e.stopPropagation()}>
+            <div className="cpm-modal-header">
+              <h2 className="cpm-modal-title">
+                {t(region, 'photos')} — {photoLightbox}
+              </h2>
+              <button
+                type="button"
+                className="cpm-modal-close"
+                aria-label={t(region, 'dismiss')}
+                onClick={() => setPhotoLightbox(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="cpm-modal-body">
+              {isLoading(store, 'photos') && <div className="notice loading">{t(region, 'loading')}…</div>}
+              {(photosByTask[photoLightbox] || []).length === 0 && !isLoading(store, 'photos') && (
+                <div className="cpm-muted">{t(region, 'noPhotos')}</div>
+              )}
+              <div className="field-photo-grid">
+                {(photosByTask[photoLightbox] || []).map((ph) => (
+                  <FieldPhotoThumb
+                    key={ph.id}
+                    photo={ph}
+                    canDelete={canWrite}
+                    onDelete={() => handleDeleteLightboxPhoto(photoLightbox, ph.id)}
+                  />
+                ))}
+              </div>
+            </div>
+            <div className="cpm-modal-footer">
+              <button type="button" className="secondary" onClick={() => setPhotoLightbox(null)}>
+                {t(region, 'dismiss')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ===== 狀態列（僅 project/projects scope；寫入動作另以 mutation scope 顯示） ===== */}
       {boardLoading && (
         <div style={{ padding: '8px', color: '#2980b9' }}>{t(region, 'loading')}…</div>
@@ -1113,6 +1257,8 @@ export default function ScheduleBoard() {
                 <th style={thStyle}>{t(region, 'floatTime')}</th>
                 <th style={thStyle}>{t(region, 'critical')}</th>
                 <th style={thStyle}>Pred.</th>
+                <th style={thStyle}>{t(region, 'photos')}</th>
+                <th style={thStyle}>{t(region, 'qrCode')}</th>
                 {canWrite && <th style={thStyle}>{t(region, 'updateDuration')}</th>}
                 {canWrite && <th style={thStyle}>{t(region, 'delete')}</th>}
               </tr>
@@ -1120,7 +1266,7 @@ export default function ScheduleBoard() {
             <tbody>
               {tasks.length === 0 && (
                 <tr>
-                  <td style={{ ...tdStyle, textAlign: 'center', color: '#999' }} colSpan={canWrite ? 9 : 7}>
+                  <td style={{ ...tdStyle, textAlign: 'center', color: '#999' }} colSpan={canWrite ? 11 : 9}>
                     {t(region, 'addTask')}
                   </td>
                 </tr>

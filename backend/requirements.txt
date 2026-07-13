@@ -13,6 +13,7 @@ reportlab
 openpyxl
 httpx
 python-multipart
+segno
 pytest
 pytest-asyncio
 anyio

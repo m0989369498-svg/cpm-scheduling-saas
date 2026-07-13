@@ -31,6 +31,10 @@ pgdata/
 *.sqlite
 *.sqlite3
 
+# --- 任務照片附件本地儲存 (Pro Batch C；settings.upload_dir 預設 ./uploads) ---
+# 正式環境為 docker-compose 具名 volume；本機/測試 dev 才會落在 repo 內。
+uploads/
+
 # --- 編輯器 / OS / 工具 ------------------------------------------------------
 .idea/
 .vscode/

@@ -80,6 +80,14 @@ services:
       DINGTALK_WEBHOOK_URL: ""
       ERP_SCAN_INTERVAL_SECONDS: "300"
       ERP_MAX_RETRIES: "5"
+      # --- Pro Batch C：行動端現場回報 (任務照片附件 + QR deep-link) ---
+      # 任務照片存放於具名 volume (見下方 volumes)，容器內路徑固定 /app/uploads。
+      UPLOAD_DIR: /app/uploads
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+    # 任務照片附件持久化存放 (settings.upload_dir 對應 UPLOAD_DIR)；具名 volume
+    # 避免依賴 host 路徑，容器重建 (非資料卷重建) 時檔案不遺失。
+    volumes:
+      - uploads:/app/uploads
     # 僅 expose 於內部網路 — gateway (:8080) 是唯一對外入口；
     # Swagger / OpenAPI 改經 gateway 存取: http://localhost:8080/docs
     expose:
@@ -187,10 +195,11 @@ services:
       - cpm_net
 
 # -----------------------------------------------------------------------------
-# Named volume — PostgreSQL 持久化資料
+# Named volumes — PostgreSQL 持久化資料 / 任務照片附件 (Pro Batch C)
 # -----------------------------------------------------------------------------
 volumes:
   pgdata:
+  uploads:
 
 # -----------------------------------------------------------------------------
 # 單一網路 — 所有服務以 service name 互通 (hostname == service name)

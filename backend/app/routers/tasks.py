@@ -7,13 +7,21 @@ recompute_project() 重算整個專案 CPM 並回傳新的 ProjectOut。
 
 from __future__ import annotations
 
+import functools
+import io
 import logging
+from urllib.parse import urlencode
 
+import anyio
+import segno
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core import audit
+from app.core.httputil import safe_filename
 from app.deps import verify_tenant, get_db, TenantContext, require_role
 from app.models.orm import Task, TaskDependency
 from app.schemas.schedule import (
@@ -108,6 +116,17 @@ async def _replace_predecessors(
                 )
             )
     await db.flush()
+
+
+def _build_qr_png(url: str) -> bytes:
+    """以 segno 產生指向 url 的 QR code PNG bytes（同步 / CPU 密集）。
+
+    呼叫端須以 anyio.to_thread.run_sync 執行，避免阻塞 event loop
+    （沿用 exports.py 匯出 xlsx/pdf 的既有模式）。
+    """
+    buf = io.BytesIO()
+    segno.make(url).save(buf, kind="png", scale=6)
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -421,3 +440,40 @@ async def delete_task(
         logger.warning("audit TASK_DELETE failed (ignored): %s", exc)
 
     return project_out
+
+
+@router.get("/{project_id}/tasks/{task_id}/qr.png")
+async def task_qr_code(
+    project_id: str,
+    task_id: str,
+    ctx: TenantContext = Depends(verify_tenant),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """任務 QR deep-link（Pro Batch C）：掃描後直接開啟行動端「現場模式」。
+
+    唯讀端點，viewer 角色亦可存取（不加 require_role，與 exports.py 一致）。
+    404：專案或任務不存在。
+
+    連結網址 = settings.public_base_url（留空時用相對路徑，同網域手機仍可用，
+    但無法印製給外部網路裝置掃描；正式部署請設定 PUBLIC_BASE_URL）
+    + "/?field=1&project={pid}&task={tid}"。
+    """
+    await _get_project_or_404(db, project_id, ctx.tenant_id)
+    await _get_task_or_404(db, project_id, task_id)
+
+    query = urlencode({"field": "1", "project": project_id, "task": task_id})
+    path = f"/?{query}"
+    base = (settings.public_base_url or "").rstrip("/")
+    url = f"{base}{path}" if base else path
+
+    # segno 產生 PNG 為 CPU 密集的同步作業，以工作執行緒執行避免阻塞 event loop
+    # (沿用 exports.py 的 anyio.to_thread.run_sync 模式)。
+    png_bytes = await anyio.to_thread.run_sync(functools.partial(_build_qr_png, url))
+    # project_id / task_id 為使用者可控字串：消毒後才能放入標頭 quoted-string
+    # （防 `"` 跳脫與 CR/LF 標頭注入，見 core/httputil.safe_filename）。
+    filename = safe_filename(f"qr_{project_id}_{task_id}.png")
+    return StreamingResponse(
+        io.BytesIO(png_bytes),
+        media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )

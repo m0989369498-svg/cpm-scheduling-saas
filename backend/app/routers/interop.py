@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import audit
+from app.core.httputil import safe_filename
 from app.deps import TenantContext, get_db, require_role, verify_tenant
 from app.interop import InteropLink, InteropProject, InteropTask, InteropWbsNode
 from app.interop.mspdi import generate_mspdi, parse_mspdi
@@ -495,7 +496,7 @@ async def export_xer(
     except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
         logger.warning("audit PROJECT_EXPORT(xer) failed (ignored): %s", exc)
 
-    filename = f"{project_id}.xer"
+    filename = safe_filename(f"{project_id}.xer")
     return StreamingResponse(
         io.BytesIO(xer_text.encode("utf-8")),
         media_type="text/plain",
@@ -522,7 +523,7 @@ async def export_mspdi(
     except Exception as exc:  # noqa: BLE001 - 稽核失敗不可中斷主要操作
         logger.warning("audit PROJECT_EXPORT(mspdi) failed (ignored): %s", exc)
 
-    filename = f"{project_id}.mspdi.xml"
+    filename = safe_filename(f"{project_id}.mspdi.xml")
     return StreamingResponse(
         io.BytesIO(xml_text.encode("utf-8")),
         media_type="application/xml",

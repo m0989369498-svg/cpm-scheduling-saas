@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     # dev_bootstrap：在「非 sqlite」DB 上也強制 create_all + 種子 (預設關閉)。
     dev_bootstrap: bool = False                       # env DEV_BOOTSTRAP
 
+    # --- Pro Batch C：行動端現場回報 (Mobile field reporting) ---------------
+    # upload_dir：任務照片附件的磁碟儲存根目錄 (相對路徑以啟動時的工作目錄為準；
+    # docker-compose 會掛載為具名 volume 並設為絕對路徑 /app/uploads)。
+    upload_dir: str = "./uploads"                     # env UPLOAD_DIR
+    # public_base_url：QR deep-link 使用的對外基底網址 (含 scheme + host，不含
+    # 尾端斜線；例如 https://cpm.example.com)。留空時 QR 改編碼「相對路徑」
+    # (/?field=1&...)，同網域的手機仍可掃描使用，但無法印製給外部網路使用。
+    # 正式部署請設定 PUBLIC_BASE_URL 為對外可存取的網址，QR 才能供任意裝置掃描。
+    public_base_url: str = ""                          # env PUBLIC_BASE_URL
+
     # --- 首次啟動初始管理員 (Initial Admin) ---------------------------------
     # 於「所有模式」啟動時皆會嘗試建立 (見 main._seed_initial_admin)：當
     # username + password 皆有值且該帳號尚不存在時，確保租戶列存在後插入一個

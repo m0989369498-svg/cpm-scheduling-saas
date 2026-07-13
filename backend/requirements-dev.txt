@@ -40,6 +40,9 @@ httpx
 # --- 表單 (multipart) ---
 python-multipart
 
+# --- QR deep-link (現場回報任務 QR code；pure-python, ARM64-safe) ---
+segno
+
 # --- 認證 (JWT + 密碼雜湊；皆為 pure-python，ARM64 可直接安裝) ---
 pyjwt
 passlib

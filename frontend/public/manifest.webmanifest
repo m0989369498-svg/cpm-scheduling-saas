@@ -1,0 +1,26 @@
+{
+  "name": "CPM 工地回報",
+  "short_name": "CPM 回報",
+  "description": "CPM 工程排程 SaaS — 行動裝置工地現場回報模式（進度、成本、照片，支援離線）",
+  "start_url": "/?field=1",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5f6f8",
+  "theme_color": "#2c7be5",
+  "lang": "zh-Hant",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

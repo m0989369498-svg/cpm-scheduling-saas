@@ -430,6 +430,49 @@ class ProjectBaseline(Base):
 
 
 # ---------------------------------------------------------------------------
+# public schema —— Pro Batch C (FEATURE 1) 任務照片附件 (受 RLS 保護)
+# ---------------------------------------------------------------------------
+class TaskPhoto(Base):
+    """任務照片附件 (task_photos)。行動端現場回報 (mobile field reporting)。
+
+    實際檔案內容存於磁碟 (settings.upload_dir)，本表僅存中繼資料；
+    stored_name 為伺服器產生的 uuid4hex 檔名 (絕不取自使用者輸入)，
+    content_type 由上傳時的 magic bytes 判定 (見 app/routers/photos.py)。
+    受 RLS 保護 (與 tasks / projects 一致)，故置於 public schema。
+    """
+
+    __tablename__ = "task_photos"
+    __table_args__ = (
+        UniqueConstraint("stored_name", name="uq_task_photos_stored_name"),
+        Index("ix_task_photos_project_task", "project_id", "task_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    stored_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    original_name: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=text("''")
+    )
+    content_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    note: Mapped[str] = mapped_column(
+        String(500), nullable=False, server_default=text("''")
+    )
+    uploaded_by: Mapped[str] = mapped_column(
+        String(150), nullable=False, server_default=text("''")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP_TZ, server_default=func.now()
+    )
+
+
+# ---------------------------------------------------------------------------
 # public schema —— 應用使用者 (app_users)；登入用,「不」受 RLS 保護
 # ---------------------------------------------------------------------------
 class AppUser(Base):

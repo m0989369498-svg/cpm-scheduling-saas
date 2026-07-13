@@ -35,6 +35,9 @@ export const LOADING_SCOPES = [
   'baselines',
   // ---- Pro Batch A：P6 XER + MS Project MSPDI XML 匯入 ----
   'import',
+  // ---- Pro Batch C：行動裝置現場回報（任務照片 + 離線佇列同步）----
+  'photos',
+  'fieldQueue',
 ]
 
 function readLS(key, fallback) {
@@ -64,6 +67,13 @@ function removeLS(key) {
     /* 忽略 */
   }
 }
+
+// Pro Batch C：syncFieldQueue 併發防護旗標（module-level，非 UI 狀態）。
+// 行動瀏覽器（Android Chrome / iOS Safari）在分頁喚醒時常誤發 'online' 事件，
+// 可能與 FieldMode 掛載時的同步重疊；fieldQueue.replay 是「讀清單 -> 逐項
+// 處理 -> 成功才移除」，兩個並行 replay 會在移除前各自讀到同一批項目而重複
+// 上傳。以 in-flight 旗標讓重疊觸發直接成為 no-op。
+let fieldQueueSyncInFlight = false
 
 // zustand 排程狀態：
 // state { tenantId, region, token, username, projects, currentProject,
@@ -126,6 +136,12 @@ export const useScheduleStore = create((set, get) => ({
   // importReport : {format, tasks, wbs, links, constraints, warnings:[string]} | null
   // 最近一次匯入的結果摘要，供 ScheduleBoard 顯示可關閉的報告橫幅/彈窗。
   importReport: null,
+
+  // ---- Pro Batch C：行動裝置現場回報（任務照片 + 離線佇列同步）----
+  // photosByTask     : { [taskId]: PhotoOut[] }（lazy；board 徽章展開 / FieldMode 皆共用同一快取）
+  // fieldQueueCount  : number（離線佇列待同步筆數；FieldMode 掛載 + 上線事件時刷新）
+  photosByTask: {},
+  fieldQueueCount: 0,
 
   // ---- Batch 4：scoped loading/error 內部輔助 ----
 
@@ -200,6 +216,24 @@ export const useScheduleStore = create((set, get) => ({
   logout: () => {
     removeLS(LS_TOKEN_KEY)
     removeLS(LS_ROLE_KEY)
+    // Pro Batch C：清除 Service Worker 的 /api/* 回應快取（所有租戶桶，
+    // 名稱前綴須與 public/sw.js 的 API_CACHE_PREFIX 一致）。共用工地裝置上，
+    // 前一位使用者快取的 API 回應絕不可在下一位登入後的離線回退中被讀到。
+    // best-effort：不支援 Cache API 的環境（舊瀏覽器 / jsdom 測試）靜默略過。
+    try {
+      if (typeof caches !== 'undefined' && caches && typeof caches.keys === 'function') {
+        caches
+          .keys()
+          .then((keys) =>
+            Promise.all(
+              keys.filter((k) => k.startsWith('cpm-field-api-')).map((k) => caches.delete(k)),
+            ),
+          )
+          .catch(() => {})
+      }
+    } catch (e) {
+      /* Cache API 不可用：略過 */
+    }
     set({
       token: null,
       role: null,
@@ -230,6 +264,8 @@ export const useScheduleStore = create((set, get) => ({
       baselines: [],
       // 重置 Pro Batch A：匯入報告
       importReport: null,
+      // 重置 Pro Batch C：任務照片快取（離線佇列待同步筆數為裝置層級，不隨登出清除）
+      photosByTask: {},
     })
   },
 
@@ -263,6 +299,8 @@ export const useScheduleStore = create((set, get) => ({
       baselines: [],
       // 切換租戶：清空 Pro Batch A 匯入報告（避免跨租戶殘留）
       importReport: null,
+      // 切換租戶：清空 Pro Batch C 任務照片快取（避免跨租戶殘留）
+      photosByTask: {},
     })
   },
 
@@ -301,6 +339,8 @@ export const useScheduleStore = create((set, get) => ({
       // Pro Batch B：切換/新建專案時重置 WBS + 多重命名基準線（不可跨專案沿用）
       wbs: [],
       baselines: [],
+      // Pro Batch C：切換專案時重置任務照片快取（不可跨專案沿用）
+      photosByTask: {},
     })
     get()._start('project')
     try {
@@ -329,6 +369,8 @@ export const useScheduleStore = create((set, get) => ({
       // Pro Batch B：切換/新建專案時重置 WBS + 多重命名基準線（不可跨專案沿用）
       wbs: [],
       baselines: [],
+      // Pro Batch C：新建專案時重置任務照片快取（不可跨專案沿用）
+      photosByTask: {},
     })
     get()._start('mutation')
     try {
@@ -827,6 +869,7 @@ export const useScheduleStore = create((set, get) => ({
       dataDate: null,
       wbs: [],
       baselines: [],
+      photosByTask: {},
     })
     get()._start('import')
     try {
@@ -961,6 +1004,147 @@ export const useScheduleStore = create((set, get) => ({
     } catch (err) {
       get()._fail('users', err)
       throw err
+    }
+  },
+
+  // ---- Pro Batch C：行動裝置現場回報（任務照片 + QR 深連結 + 離線佇列同步）----
+
+  // 載入單一任務照片清單（lazy；board 徽章展開 / FieldMode 任務卡片皆呼叫此 action）；
+  // 存入 store.photosByTask[taskId]。
+  loadTaskPhotos: async (taskId) => {
+    const cur = get().currentProject
+    if (!cur) return []
+    get()._start('photos')
+    try {
+      const list = await api.listTaskPhotos(cur.project_id, taskId)
+      set((state) => ({
+        photosByTask: { ...state.photosByTask, [taskId]: Array.isArray(list) ? list : [] },
+      }))
+      get()._ok('photos')
+      return list
+    } catch (err) {
+      get()._fail('photos', err)
+      throw err
+    }
+  },
+
+  // 上傳任務照片（FormData file + note 選填）；成功後附加至 store.photosByTask[taskId]。
+  uploadTaskPhoto: async (taskId, file, note) => {
+    const cur = get().currentProject
+    if (!cur) return null
+    get()._start('photos')
+    try {
+      const photo = await api.uploadTaskPhoto(cur.project_id, taskId, file, note)
+      set((state) => ({
+        photosByTask: {
+          ...state.photosByTask,
+          [taskId]: [...(state.photosByTask[taskId] || []), photo],
+        },
+      }))
+      get()._ok('photos')
+      return photo
+    } catch (err) {
+      get()._fail('photos', err)
+      throw err
+    }
+  },
+
+  // 刪除任務照片（editor+）；成功後自 store.photosByTask[taskId] 移除該筆。
+  deleteTaskPhoto: async (taskId, photoId) => {
+    get()._start('photos')
+    try {
+      const result = await api.deleteTaskPhoto(photoId)
+      set((state) => ({
+        photosByTask: {
+          ...state.photosByTask,
+          [taskId]: (state.photosByTask[taskId] || []).filter((p) => p.id !== photoId),
+        },
+      }))
+      get()._ok('photos')
+      return result
+    } catch (err) {
+      get()._fail('photos', err)
+      throw err
+    }
+  },
+
+  // 任務 QR 深連結圖片 URL（純字串組裝，不呼叫 API；當前專案不存在時回空字串）。
+  qrUrl: (taskId) => {
+    const cur = get().currentProject
+    if (!cur) return ''
+    return api.qrUrl(cur.project_id, taskId)
+  },
+
+  // ---- 離線佇列（frontend/src/offline/fieldQueue.js）----
+  // 以動態匯入載入離線佇列模組：該模組屬另一併行工作項的產出，且本 store 被
+  // 既有測試套件廣泛匯入 (scheduleStore.test.js / client.test.js / wbsBaselines.test.js
+  // 等)；若在檔案頂層靜態匯入，一旦該模組尚未落地會使上述既有測試全數因模組
+  // 解析失敗而炸掉。動態匯入 + try/catch 讓佇列模組缺席時本 action 靜默降級為
+  // no-op（fieldQueueCount 維持 0 / 既有值），既有測試與其餘 store 功能不受影響。
+
+  // 刷新待同步筆數（FieldMode 掛載 / 佇列異動後呼叫）。
+  refreshFieldQueueCount: async () => {
+    try {
+      const mod = await import('../offline/fieldQueue.js')
+      const pending = await mod.listPending()
+      const count = Array.isArray(pending) ? pending.length : 0
+      set({ fieldQueueCount: count })
+      return pending
+    } catch (e) {
+      /* 離線佇列模組尚未就緒或瀏覽器不支援：靜默略過 */
+      return []
+    }
+  },
+
+  // 同步離線佇列：FIFO 重播每筆（progress -> 併入現有進度清單後 saveProgress；
+  // photo -> uploadTaskPhoto）；任一筆失敗即停止並保留該筆（維持順序，待下次
+  // 連線/呼叫再繼續，見 fieldQueue.replay 的「stop-and-keep」語意）。
+  syncFieldQueue: async () => {
+    // 併發防護：重疊觸發（掛載 + 誤發的 'online' 事件）直接 no-op，
+    // 避免兩個並行 replay 讀到同一批待同步項目而重複上傳（見旗標宣告處註解）。
+    if (fieldQueueSyncInFlight) return { ok: 0, failed: 0, skipped: true }
+    fieldQueueSyncInFlight = true
+    get()._start('fieldQueue')
+    try {
+      const mod = await import('../offline/fieldQueue.js')
+      const result = await mod.replay({
+        progress: async (item) => {
+          const list = await api.getProgress(item.projectId).catch(() => [])
+          const arr = Array.isArray(list) ? list : []
+          // 未回報欄位（budget / 實際起訖日）以伺服器「目前」的同任務進度列
+          // 補齊，item.payload（使用者實際編輯的欄位）最後展開覆蓋。舊版佇列
+          // 項目可能攜帶完整欄位快照，展開順序保證其行為不變（向後相容）。
+          const existing = arr.find((p) => p && p.task_id === item.taskId) || {}
+          const merged = arr.filter((p) => p && p.task_id !== item.taskId)
+          merged.push({
+            task_id: item.taskId,
+            budget: Number(existing.budget) || 0,
+            actual_start_day: existing.actual_start_day ?? null,
+            actual_finish_day: existing.actual_finish_day ?? null,
+            ...item.payload,
+          })
+          await api.saveProgress(item.projectId, merged)
+        },
+        photo: async (item) => {
+          const p = item.payload || {}
+          await api.uploadTaskPhoto(item.projectId, item.taskId, p.blob, p.note)
+        },
+      })
+      await get().refreshFieldQueueCount()
+      get()._ok('fieldQueue')
+      // 專案未變更時，同步後刷新目前進度（讓 FieldMode/ScheduleBoard 顯示最新完成度）
+      if (get().currentProject) {
+        get()
+          .loadProgress()
+          .catch(() => {})
+      }
+      return result
+    } catch (e) {
+      await get().refreshFieldQueueCount()
+      get()._fail('fieldQueue', e)
+      return { ok: false, failed: -1 }
+    } finally {
+      fieldQueueSyncInFlight = false
     }
   },
 }))

@@ -35,6 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.evm import compute_evm
+from app.core.httputil import safe_filename
 from app.core.i18n import t
 from app.core.risk_listener import RISK_PROVISION_SYNC_TYPE
 from app.deps import TenantContext, get_db, verify_tenant
@@ -550,7 +551,7 @@ async def export_xlsx(
     xlsx_bytes = await anyio.to_thread.run_sync(
         functools.partial(_build_xlsx, project_out, evm, progress_rows)
     )
-    filename = f"export_{project_id}.xlsx"
+    filename = safe_filename(f"export_{project_id}.xlsx")
     return StreamingResponse(
         io.BytesIO(xlsx_bytes),
         media_type=XLSX_MEDIA_TYPE,
@@ -572,7 +573,7 @@ async def export_pdf(
     pdf_bytes = await anyio.to_thread.run_sync(
         functools.partial(_build_pdf, project_out, evm, pending, project.region)
     )
-    filename = f"export_{project_id}.pdf"
+    filename = safe_filename(f"export_{project_id}.pdf")
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",

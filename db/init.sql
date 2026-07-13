@@ -696,6 +696,44 @@ CREATE POLICY tenant_isolation_wbs_nodes ON public.wbs_nodes
     WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
 
 -- =============================================================================
+-- 4.14 Pro Batch C (FEATURE 1) — 任務照片附件 task_photos (public schema，RLS ENABLE+FORCE)
+-- -----------------------------------------------------------------------------
+-- 行動端現場回報 (mobile field reporting)：工地人員為任務拍照上傳留存。實際
+-- 檔案內容存於磁碟 (settings.upload_dir / UPLOAD_DIR)，本表僅存中繼資料；
+-- stored_name 為伺服器產生的 uuid4hex 檔名 (絕不取自使用者輸入，避免路徑穿越 /
+-- 檔名碰撞)。上傳時以「檔案內容 magic bytes」(而非用戶端聲稱的 content-type)
+-- 判定 jpeg/png/webp，見 app/routers/photos.py。
+-- 受 RLS 保護 (與 tasks / projects 一致)；本區塊置於 GRANT 區塊之前，
+-- 方能被「GRANT ON ALL TABLES IN SCHEMA public」一併涵蓋。
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS public.task_photos (
+    id             BIGSERIAL    PRIMARY KEY,
+    project_id     VARCHAR(64)  NOT NULL REFERENCES public.projects(project_id) ON DELETE CASCADE,
+    tenant_id      VARCHAR(50)  NOT NULL,
+    task_id        VARCHAR(100) NOT NULL,                  -- 任務代碼 (對應 tasks.task_id)
+    stored_name    VARCHAR(80)  NOT NULL UNIQUE,            -- 磁碟檔名 (uuid4hex.ext；伺服器產生)
+    original_name  VARCHAR(255) NOT NULL DEFAULT '',        -- 使用者上傳時的原始檔名 (僅顯示用)
+    content_type   VARCHAR(50)  NOT NULL,                   -- 由 magic bytes 判定 (image/jpeg|png|webp)
+    size_bytes     INT          NOT NULL,                   -- 檔案大小 (bytes)
+    note           VARCHAR(500) NOT NULL DEFAULT '',        -- 現場備註
+    uploaded_by    VARCHAR(150) NOT NULL DEFAULT '',        -- 上傳者 (username，取自 ctx)
+    created_at     TIMESTAMPTZ  DEFAULT now()
+);
+
+-- 常用查詢索引 -----------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_task_photos_project ON public.task_photos(project_id);
+CREATE INDEX IF NOT EXISTS idx_task_photos_tenant  ON public.task_photos(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_task_photos_task    ON public.task_photos(project_id, task_id);
+
+-- Row Level Security — 與 tasks / projects 相同的多租戶政策 --------------------
+ALTER TABLE public.task_photos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.task_photos FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_task_photos ON public.task_photos;
+CREATE POLICY tenant_isolation_task_photos ON public.task_photos
+    USING       (tenant_id = current_setting('app.current_tenant', true))
+    WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
+
+-- =============================================================================
 -- 5. 應用程式連線角色 cpm_app (NON-SUPERUSER) — RLS 真正生效的關鍵
 -- -----------------------------------------------------------------------------
 -- 安全性重點 (root cause)：

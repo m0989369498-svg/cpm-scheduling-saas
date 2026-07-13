@@ -428,4 +428,54 @@ export function exportMspdiUrl(projectId) {
   return `${base}/projects/${encodeURIComponent(projectId)}/export.mspdi.xml`
 }
 
+// ---- Pro Batch C：行動裝置現場回報（任務照片附件 + QR 深連結）----
+
+// 上傳任務照片（multipart/form-data；note 選填，最長 500 字）-> PhotoOut
+// {id, task_id, original_name, content_type, size_bytes, note, uploaded_by, created_at, url}
+// file 可為瀏覽器 <input type="file"> 選取的 File，亦可為離線佇列重播時的 Blob
+// （此時後端以 file.name 取檔名，Blob 無 name 屬性時 FormData 會標記為 'blob'，
+// 呼叫端應優先傳入具檔名的 File；後端一律以 magic bytes 判讀型態，不信任副檔名）。
+export async function uploadTaskPhoto(projectId, taskId, file, note) {
+  const form = new FormData()
+  form.append('file', file)
+  if (note) form.append('note', note)
+  // 同 importProject：需清除預設 JSON Content-Type，讓瀏覽器依 FormData 自動
+  // 產生帶正確 boundary 的 multipart/form-data 標頭。
+  const res = await apiClient.post(
+    `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/photos`,
+    form,
+    { headers: { 'Content-Type': undefined } },
+  )
+  return res.data
+}
+
+// 列出任務照片（唯讀，viewer 亦可）-> list[PhotoOut]
+export async function listTaskPhotos(projectId, taskId) {
+  const res = await apiClient.get(
+    `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/photos`,
+  )
+  return res.data
+}
+
+// 刪除照片（editor+）-> {ok:true}
+export async function deleteTaskPhoto(photoId) {
+  const res = await apiClient.delete(`/photos/${encodeURIComponent(photoId)}`)
+  return res.data
+}
+
+// 照片檔案 URL（GET 回原始圖片位元組）。由於此端點需以 Authorization 標頭驗證，
+// <img src> 無法直接帶 Bearer，畫面上顯示縮圖/燈箱請改以 fetch(photoUrl(id), {headers})
+// 取得 blob 後建立物件 URL（同 ScheduleBoard 既有 downloadWithAuth 驗證下載模式）。
+export function photoUrl(photoId) {
+  const base = API_BASE_URL.replace(/\/$/, '')
+  return `${base}/photos/${encodeURIComponent(photoId)}`
+}
+
+// 任務 QR 深連結圖片 URL（GET image/png；唯讀，viewer 亦可）。
+// 掃描後開啟 "/?field=1&project={pid}&task={tid}"，同網域裝置可直接進入現場模式。
+export function qrUrl(projectId, taskId) {
+  const base = API_BASE_URL.replace(/\/$/, '')
+  return `${base}/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/qr.png`
+}
+
 export default apiClient

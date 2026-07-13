@@ -52,6 +52,7 @@ from app.schemas.schedule import (
 from app.core import workcal
 from app.core.cpm_engine import calculate_cpm, project_duration, critical_path
 from app.core import audit
+from app.core.httputil import safe_filename
 from app.automation import reports
 
 logger = logging.getLogger("cpm.routers.projects")
@@ -1053,7 +1054,7 @@ async def project_report(
     pdf_bytes = await anyio.to_thread.run_sync(
         functools.partial(reports.generate_schedule_pdf, project_out, project.region)
     )
-    filename = f"schedule_{project_id}.pdf"
+    filename = safe_filename(f"schedule_{project_id}.pdf")
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",

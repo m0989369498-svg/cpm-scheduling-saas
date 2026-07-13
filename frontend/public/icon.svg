@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Pro Batch C 應用圖示：填滿背景以符合 maskable 安全區規範，
+       圖案（工地回報用的檢查清單）置中並留有邊距。 -->
+  <rect width="512" height="512" fill="#2c7be5" />
+  <g fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="146" y="118" width="220" height="288" rx="18" fill="#ffffff" fill-opacity="0.12" />
+    <rect x="196" y="98" width="120" height="52" rx="14" fill="#2c7be5" stroke="#ffffff" />
+    <path d="M196 210 h140" />
+    <path d="M196 262 h140" />
+    <path d="M196 314 h90" />
+    <path d="M186 356 l24 24 l48 -52" />
+  </g>
+</svg>
