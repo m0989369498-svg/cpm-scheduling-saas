@@ -288,6 +288,10 @@ class ProjectResourceLimit(Base):
     每個專案對每種資源 (resource_type，例：crane / manpower) 設定可用上限
     (max_capacity)，供資源撫平 (resource leveling) 偵測逐日超載。
     受 RLS 保護 (與 tasks / projects 一致)，故置於 public schema。
+
+    Pro Batch D (FEATURE D1)：新增 unit_cost / category 兩個向下相容欄位
+    (皆有預設值)，供成本負載 (cost loading) 計算引擎使用；不影響既有的
+    資源撫平 (resource leveling) 邏輯。
     """
 
     __tablename__ = "project_resource_limits"
@@ -307,6 +311,44 @@ class ProjectResourceLimit(Base):
     tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
     resource_type: Mapped[str] = mapped_column(String(50), nullable=False)
     max_capacity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Pro Batch D (FEATURE D1)：每單位資源每工作日的成本 (供成本負載計算)。
+    unit_cost: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default=text("0")
+    )
+    # Pro Batch D (FEATURE D1)：資源類別 labor / equipment / material / subcontract。
+    category: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'labor'")
+    )
+
+
+class ResourceCalendar(Base):
+    """單一資源之工作日曆 (resource_calendars)。Pro Batch D (FEATURE D3)。
+
+    每專案對每種資源 (resource_type) 可設定專屬的工作日型態 (work_days，
+    7 碼 週一..週日 '1'=工作日)，供資源撫平 (resource leveling) 計算逐日
+    可用產能 (availability)：該資源在非其工作日時，當日可用產能視為 0。
+    未設定日曆的資源，退回專案層級的 max_capacity 純量上限 (向下相容)。
+    受 RLS 保護 (與 tasks / projects 一致)，故置於 public schema。
+    """
+
+    __tablename__ = "resource_calendars"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "resource_type", name="uq_resource_calendar_project_type"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    work_days: Mapped[str] = mapped_column(
+        String(7), nullable=False, server_default=text("'1111110'")
+    )
 
 
 class TaskRiskParameter(Base):

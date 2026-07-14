@@ -205,10 +205,18 @@ def _topological_order(
     return order
 
 
-def calculate_cpm(tasks: list[TaskDefinition]) -> dict[str, TaskResult]:
+def calculate_cpm(
+    tasks: list[TaskDefinition],
+    release_offsets: dict[str, int] | None = None,
+) -> dict[str, TaskResult]:
     """執行 CPM 前向 + 後向計算，回傳每個任務的計算結果。
 
     參數 tasks：任務定義清單（TaskDefinition）。
+    參數 release_offsets（選填）：{task_id: 最早開始下限（release offset）}。
+        前向掃描時該任務的 es 額外取 max(依賴推導 es, offset) —— 供資源撫平
+        （resource leveling）以「合成延遲」推遲任務，且完整保留相依型態
+        （FS/SS/FF/SF）、延時（lag）與活動限制語義。None（預設，所有既有
+        呼叫端）時行為與未加此參數前完全一致（向下相容）。
     回傳：{task_id: TaskResult}。空輸入回傳 {}。
 
     支援四種相依型態（FS/SS/FF/SF）與延時（lag，可為負）；
@@ -247,6 +255,12 @@ def calculate_cpm(tasks: list[TaskDefinition]) -> dict[str, TaskResult]:
                 bound = es[pred] + lag - duration
             if bound > earliest:
                 earliest = bound
+        # 釋放偏移（release offset）：資源撫平的合成延遲下限；與活動限制
+        # 同為「取 max 的前向下界」，套用順序不影響結果。
+        if release_offsets:
+            offset = release_offsets.get(tid, 0)
+            if offset > earliest:
+                earliest = offset
         # 活動限制（activity constraint）：在依賴推導的 es 之後套用前向邊界。
         # constraint_type/constraint_day 皆為 None 時不做任何調整
         # （今日/無限制行為完全不變）。

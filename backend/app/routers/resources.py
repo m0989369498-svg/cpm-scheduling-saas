@@ -23,18 +23,20 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import audit, risk_listener
+from app.core import audit, risk_listener, workcal
 from app.core.resource_leveling import level_resources
 from app.deps import TenantContext, get_db, require_role, verify_tenant
-from app.models.orm import ProjectResourceLimit, Task
+from app.models.orm import ProjectResourceLimit, ResourceCalendar, Task
 from app.routers.projects import (
     _build_task_definitions,
     _get_project_or_404,
     _load_dependencies,
+    _load_holiday_dates,
     _load_tasks,
 )
 from app.schemas.analytics import (
     LevelingResult,
+    ResourceCalendar as ResourceCalendarSchema,
     ResourceConfig,
     ResourceLimit,
 )
@@ -59,6 +61,18 @@ async def _load_resource_limits(
     return list(result.scalars().all())
 
 
+async def _load_resource_calendars(
+    db: AsyncSession, project_id: str
+) -> list[ResourceCalendar]:
+    """載入專案的資源工作日曆 (依 resource_type 排序, 輸出穩定)。Pro Batch D FEATURE D3。"""
+    result = await db.execute(
+        select(ResourceCalendar)
+        .where(ResourceCalendar.project_id == project_id)
+        .order_by(ResourceCalendar.resource_type)
+    )
+    return list(result.scalars().all())
+
+
 def _demands_from_tasks(tasks: list[Task]) -> dict[str, dict[str, int]]:
     """由各任務的 resource_demands 欄位組出 {task_id: {resource: qty}} 對映。
 
@@ -79,15 +93,28 @@ def _limits_to_map(limits: list[ProjectResourceLimit]) -> dict[str, int]:
 
 
 def _build_resource_config(
-    limits: list[ProjectResourceLimit], tasks: list[Task]
+    limits: list[ProjectResourceLimit],
+    tasks: list[Task],
+    calendars: list[ResourceCalendar] | None = None,
 ) -> ResourceConfig:
-    """組裝 ResourceConfig 回應 (限制 + 各任務需求)。"""
+    """組裝 ResourceConfig 回應 (限制 + 各任務需求 + 資源日曆)。"""
     return ResourceConfig(
         limits=[
-            ResourceLimit(resource_type=lim.resource_type, max_capacity=int(lim.max_capacity))
+            ResourceLimit(
+                resource_type=lim.resource_type,
+                max_capacity=int(lim.max_capacity),
+                unit_cost=float(lim.unit_cost or 0),
+                category=lim.category or "labor",
+            )
             for lim in limits
         ],
         demands=_demands_from_tasks(tasks),
+        calendars=[
+            ResourceCalendarSchema(
+                resource_type=c.resource_type, work_days=c.work_days or "1111110"
+            )
+            for c in (calendars or [])
+        ],
     )
 
 
@@ -100,11 +127,13 @@ async def get_resources(
     ctx: TenantContext = Depends(verify_tenant),
     db: AsyncSession = Depends(get_db),
 ) -> ResourceConfig:
-    """讀取專案資源設定: 限制取自 project_resource_limits, 需求取自 tasks.resource_demands。"""
+    """讀取專案資源設定: 限制取自 project_resource_limits, 需求取自 tasks.resource_demands,
+    日曆取自 resource_calendars (Pro Batch D FEATURE D3)。"""
     await _get_project_or_404(db, project_id, ctx.tenant_id)
     limits = await _load_resource_limits(db, project_id)
     tasks = await _load_tasks(db, project_id)
-    return _build_resource_config(limits, tasks)
+    calendars = await _load_resource_calendars(db, project_id)
+    return _build_resource_config(limits, tasks, calendars)
 
 
 @router.put("/{project_id}/resources", response_model=ResourceConfig)
@@ -115,10 +144,14 @@ async def set_resources(
     db: AsyncSession = Depends(get_db),
     _role: None = Depends(require_role("editor")),
 ) -> ResourceConfig:
-    """upsert 資源限制 (project_resource_limits) 與各任務需求 (tasks.resource_demands)。
+    """upsert 資源限制 (project_resource_limits)、各任務需求 (tasks.resource_demands)
+    與資源日曆 (resource_calendars，Pro Batch D FEATURE D3)。
 
-    - 限制: 依 (project_id, resource_type) upsert; payload 未列出的既有限制保留不動。
+    - 限制: 依 (project_id, resource_type) upsert (含 unit_cost / category)；
+      payload 未列出的既有限制保留不動。
     - 需求: 依 task_id upsert 至對應 Task.resource_demands; payload 未列出的任務不變動。
+    - 日曆: 依 (project_id, resource_type) upsert；payload 未列出的既有日曆保留不動
+      (與限制的 upsert 政策一致)。
     tenant_id 一律取自 ctx (寫入隔離)。
     """
     await _get_project_or_404(db, project_id, ctx.tenant_id)
@@ -130,6 +163,8 @@ async def set_resources(
         row = by_type.get(lim_in.resource_type)
         if row is not None:
             row.max_capacity = int(lim_in.max_capacity)
+            row.unit_cost = float(lim_in.unit_cost or 0)
+            row.category = lim_in.category or "labor"
         else:
             db.add(
                 ProjectResourceLimit(
@@ -137,8 +172,28 @@ async def set_resources(
                     tenant_id=ctx.tenant_id,
                     resource_type=lim_in.resource_type,
                     max_capacity=int(lim_in.max_capacity),
+                    unit_cost=float(lim_in.unit_cost or 0),
+                    category=lim_in.category or "labor",
                 )
             )
+
+    # --- upsert 資源日曆 (Pro Batch D FEATURE D3) ---
+    if payload.calendars:
+        existing_cal = await _load_resource_calendars(db, project_id)
+        by_cal_type = {c.resource_type: c for c in existing_cal}
+        for cal_in in payload.calendars:
+            row = by_cal_type.get(cal_in.resource_type)
+            if row is not None:
+                row.work_days = cal_in.work_days
+            else:
+                db.add(
+                    ResourceCalendar(
+                        project_id=project_id,
+                        tenant_id=ctx.tenant_id,
+                        resource_type=cal_in.resource_type,
+                        work_days=cal_in.work_days,
+                    )
+                )
 
     # --- upsert 各任務需求 ---
     if payload.demands:
@@ -181,7 +236,58 @@ async def set_resources(
     # 回傳更新後的完整設定
     limits = await _load_resource_limits(db, project_id)
     tasks = await _load_tasks(db, project_id)
-    return _build_resource_config(limits, tasks)
+    calendars = await _load_resource_calendars(db, project_id)
+    return _build_resource_config(limits, tasks, calendars)
+
+
+async def _build_availability(
+    db: AsyncSession,
+    project,
+    project_id: str,
+    limits: dict[str, int],
+    definitions: list,
+) -> dict[str, list[int]] | None:
+    """組出資源撫平用的逐日可用產能 (Pro Batch D FEATURE D3)。
+
+    僅當「專案已設定 start_date」且「至少一筆 resource_calendars」時才建立；
+    否則回傳 None (退回批次前的純量上限行為，regression-critical)。
+    有日曆的資源：每個 offset 天，經 workcal.offset_to_date 換算為實際日期，
+    依「該資源自己的 work_days」判定是否為其工作日 -> 是則產能=limits[res]，
+    否則產能=0。無日曆的資源不列入 availability (退回純量上限)。
+    """
+    if project.start_date is None:
+        return None
+
+    calendars = await _load_resource_calendars(db, project_id)
+    if not calendars:
+        return None
+
+    holidays = await _load_holiday_dates(db, project_id)
+
+    from app.core.cpm_engine import calculate_cpm, project_duration as _project_duration
+
+    if definitions:
+        try:
+            base_results = calculate_cpm(definitions)
+            project_duration = _project_duration(base_results)
+        except ValueError:
+            project_duration = 0
+    else:
+        project_duration = 0
+
+    availability: dict[str, list[int]] = {}
+    for cal in calendars:
+        cap = int(limits.get(cal.resource_type, 0))
+        day_list: list[int] = []
+        for day in range(project_duration):
+            the_date = workcal.offset_to_date(
+                project.start_date, day, project.work_days or "1111110", holidays
+            )
+            is_resource_workday = (cal.work_days or "1111110")[the_date.weekday()] == "1"
+            day_list.append(cap if is_resource_workday else 0)
+        availability[cal.resource_type] = day_list
+
+    return availability
 
 
 @router.post("/{project_id}/level", response_model=LevelingResult)
@@ -194,6 +300,11 @@ async def level_project(
 
     若撫平導致工期展延 (result.extended), 觸發 risk_listener.evaluate_and_dispatch
     (reason="LEVELING_EXTENSION"), 入列 RISK_PROVISION 事件並 best-effort 通知。
+
+    Pro Batch D (FEATURE D3)：當專案已設定 start_date 且至少一筆
+    resource_calendars 存在時，建立逐日可用產能 (availability) 傳入
+    level_resources，使有專屬日曆的資源在非其工作日時產能視為 0；
+    否則 availability=None，行為與批次前完全一致。
     """
     project = await _get_project_or_404(db, project_id, ctx.tenant_id)
 
@@ -204,7 +315,11 @@ async def level_project(
     demands = _demands_from_tasks(tasks)
     limits = _limits_to_map(await _load_resource_limits(db, project_id))
 
-    result: LevelingResult = level_resources(definitions, demands, limits)
+    availability = await _build_availability(
+        db, project, project_id, limits, definitions
+    )
+
+    result: LevelingResult = level_resources(definitions, demands, limits, availability)
 
     if result.extended:
         try:

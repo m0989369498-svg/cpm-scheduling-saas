@@ -327,12 +327,16 @@ ON CONFLICT (project_id, task_id, predecessor_task_id) DO NOTHING;
 
 -- 4.8.1 專案資源上限 (project_resource_limits) --------------------------------
 --   每專案對每種資源 (resource_type，例：crane / manpower) 的可用上限。
+--   Pro Batch D (FEATURE D1)：unit_cost / category 兩個向下相容欄位 (皆有預設值)，
+--   供成本負載 (cost loading) 計算引擎使用。
 CREATE TABLE IF NOT EXISTS public.project_resource_limits (
     id            BIGSERIAL    PRIMARY KEY,
     project_id    VARCHAR(64)  NOT NULL REFERENCES public.projects(project_id) ON DELETE CASCADE,
     tenant_id     VARCHAR(50)  NOT NULL,
     resource_type VARCHAR(50)  NOT NULL,                  -- 資源類別 e.g. crane / manpower
     max_capacity  INT          NOT NULL CHECK (max_capacity >= 0),  -- 可用上限
+    unit_cost     DOUBLE PRECISION NOT NULL DEFAULT 0,     -- 每單位資源每工作日成本 (Batch D FEATURE D1)
+    category      VARCHAR(20)  NOT NULL DEFAULT 'labor',   -- labor/equipment/material/subcontract (Batch D FEATURE D1)
     UNIQUE (project_id, resource_type)
 );
 
@@ -350,11 +354,26 @@ CREATE TABLE IF NOT EXISTS public.task_risk_parameters (
     UNIQUE (project_id, task_id)
 );
 
+-- 4.8.5 Pro Batch D (FEATURE D3) — 每資源專屬工作日曆 (resource_calendars) ----
+--   每專案對每種資源可設定專屬 work_days (7 碼 週一..週日 '1'=工作日)；供
+--   資源撫平計算逐日可用產能 (非其工作日時當日產能視為 0)。未設定日曆的資源
+--   退回專案層級的 max_capacity 純量上限 (向下相容)。
+CREATE TABLE IF NOT EXISTS public.resource_calendars (
+    id            BIGSERIAL    PRIMARY KEY,
+    project_id    VARCHAR(64)  NOT NULL REFERENCES public.projects(project_id) ON DELETE CASCADE,
+    tenant_id     VARCHAR(50)  NOT NULL,
+    resource_type VARCHAR(50)  NOT NULL,
+    work_days     VARCHAR(7)   NOT NULL DEFAULT '1111110',
+    UNIQUE (project_id, resource_type)
+);
+
 -- 常用查詢索引 -----------------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_resource_limits_project ON public.project_resource_limits(project_id);
 CREATE INDEX IF NOT EXISTS idx_resource_limits_tenant  ON public.project_resource_limits(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_risk_params_project     ON public.task_risk_parameters(project_id);
 CREATE INDEX IF NOT EXISTS idx_risk_params_tenant      ON public.task_risk_parameters(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_resource_calendars_project ON public.resource_calendars(project_id);
+CREATE INDEX IF NOT EXISTS idx_resource_calendars_tenant  ON public.resource_calendars(tenant_id);
 
 -- 4.8.3 Row Level Security — 與 tasks / projects 相同的多租戶政策 -------------
 ALTER TABLE public.project_resource_limits ENABLE ROW LEVEL SECURITY;
@@ -368,6 +387,13 @@ ALTER TABLE public.task_risk_parameters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.task_risk_parameters FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation_risk_params ON public.task_risk_parameters;
 CREATE POLICY tenant_isolation_risk_params ON public.task_risk_parameters
+    USING       (tenant_id = current_setting('app.current_tenant', true))
+    WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
+
+ALTER TABLE public.resource_calendars ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.resource_calendars FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_resource_calendars ON public.resource_calendars;
+CREATE POLICY tenant_isolation_resource_calendars ON public.resource_calendars
     USING       (tenant_id = current_setting('app.current_tenant', true))
     WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
 
@@ -387,16 +413,24 @@ UPDATE public.tasks SET resource_demands = '{"crane": 1, "manpower": 12}'::jsonb
 UPDATE public.tasks SET resource_demands = '{"crane": 2, "manpower": 18}'::jsonb
     WHERE project_id = 'PRJ-2026-CN-001' AND task_id = 'C-02' AND resource_demands IS NULL;
 
--- 專案資源上限 ----------------------------------------------------------------
-INSERT INTO public.project_resource_limits (project_id, tenant_id, resource_type, max_capacity)
+-- 專案資源上限 (含 unit_cost / category —— Pro Batch D FEATURE D1 成本負載示範) ---
+INSERT INTO public.project_resource_limits
+    (project_id, tenant_id, resource_type, max_capacity, unit_cost, category)
 VALUES
-    ('PRJ-2026-TW-001', 'TENT-9981',   'crane',    2),
-    ('PRJ-2026-TW-001', 'TENT-9981',   'manpower', 20),
-    ('PRJ-2026-CN-001', 'TENT-CN-002', 'crane',    2),
-    ('PRJ-2026-CN-001', 'TENT-CN-002', 'manpower', 20),
+    ('PRJ-2026-TW-001', 'TENT-9981',   'crane',    2, 3000, 'equipment'),
+    ('PRJ-2026-TW-001', 'TENT-9981',   'manpower', 20, 250, 'labor'),
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'crane',    2, 2800, 'equipment'),
+    ('PRJ-2026-CN-001', 'TENT-CN-002', 'manpower', 20, 220, 'labor'),
     -- 雙塔平行示範：吊車上限刻意僅 1 部 => PA1 與 PB1 平行時必然超載 (crane=2 > 1)。
-    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'crane',    1),
-    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'manpower', 20)
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'crane',    1, 3200, 'equipment'),
+    ('PRJ-2026-TW-PARALLEL', 'TENT-9981', 'manpower', 20, 260, 'labor')
+ON CONFLICT (project_id, resource_type) DO NOTHING;
+
+-- 資源專屬工作日曆 (Pro Batch D FEATURE D3；示範：吊車僅週一至週五出勤) ---------
+INSERT INTO public.resource_calendars (project_id, tenant_id, resource_type, work_days)
+VALUES
+    ('PRJ-2026-TW-001', 'TENT-9981', 'crane',    '1111100'),
+    ('PRJ-2026-TW-001', 'TENT-9981', 'manpower', '1111110')
 ON CONFLICT (project_id, resource_type) DO NOTHING;
 
 -- 任務風險參數 (PERT 三點估計) ------------------------------------------------

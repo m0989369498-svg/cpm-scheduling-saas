@@ -38,6 +38,24 @@ logger = logging.getLogger("cpm.main")
 # --------------------------------------------------------------------------- #
 # 啟動種子 (seeding) —— 全程 best-effort，任何失敗只記錄、絕不中斷啟動。
 # --------------------------------------------------------------------------- #
+# Pro Batch D (FEATURE D1) —— 種子專案資源費率示範值 (單一事實來源)：
+#   {(project_id, resource_type): (unit_cost, category)}
+# 用途：
+#   1. _seed_core_data 建立「新」project_resource_limits 列時查表填入。
+#   2. _ensure_batch6_columns 於既有 sqlite dev DB「剛以 ALTER 新增
+#      unit_cost/category 欄位的當次」一次性回填 —— 該時點所有列必為 ALTER
+#      的預設值 (0 / 'labor')，不可能是使用者編輯過的值，故回填安全；
+#      之後的啟動不再觸碰既有列 (使用者將 unit_cost 改為 0 亦不會被覆寫)。
+_SEED_RESOURCE_RATES: dict[tuple[str, str], tuple[float, str]] = {
+    ("PRJ-2026-TW-001", "crane"): (3000.0, "equipment"),
+    ("PRJ-2026-TW-001", "manpower"): (250.0, "labor"),
+    ("PRJ-2026-CN-001", "crane"): (2800.0, "equipment"),
+    ("PRJ-2026-CN-001", "manpower"): (220.0, "labor"),
+    ("PRJ-2026-TW-PARALLEL", "crane"): (3200.0, "equipment"),
+    ("PRJ-2026-TW-PARALLEL", "manpower"): (260.0, "labor"),
+}
+
+
 async def _seed_core_data() -> None:
     """冪等寫入核心示範資料 (僅在 sqlite / dev_bootstrap 模式呼叫)。
 
@@ -53,6 +71,7 @@ async def _seed_core_data() -> None:
         Project,
         ProjectBaseline,
         ProjectResourceLimit,
+        ResourceCalendar,
         Task,
         TaskDependency,
         TaskProgress,
@@ -71,7 +90,10 @@ async def _seed_core_data() -> None:
     #   tasks  : (task_id, task_name, duration, status, es, ef, ls, lf, float, critical, demands)
     #            demands: dict[str,int] | None  (每任務資源需求 e.g. {"crane":1,"manpower":15})
     #   deps   : (task_id, predecessor_task_id)
-    #   limits : (resource_type, max_capacity)            專案資源上限
+    #   limits : (resource_type, max_capacity)  專案資源上限
+    #            (Pro Batch D FEATURE D1：unit_cost/category 示範值由模組層級
+    #             _SEED_RESOURCE_RATES 查表提供，僅於「新建列」時填入)
+    #   calendars : (resource_type, work_days)  資源專屬工作日曆 (Pro Batch D FEATURE D3；選填)
     #   risk   : (task_id, optimistic, most_likely, pessimistic)  PERT 三點估計
     #   progress : (task_id, budget, percent_complete, actual_cost,
     #              actual_start_day|None, actual_finish_day|None)  Phase 9 進度/EVM
@@ -91,7 +113,14 @@ async def _seed_core_data() -> None:
                     {"crane": 2, "manpower": 8}),
             ],
             "deps": [("T-02", "T-01"), ("T-03", "T-02")],
-            "limits": [("crane", 2), ("manpower", 20)],
+            "limits": [
+                ("crane", 2),
+                ("manpower", 20),
+            ],
+            "calendars": [
+                ("crane", "1111100"),
+                ("manpower", "1111110"),
+            ],
             "risk": [
                 ("T-01", 3, 5, 9),
                 ("T-02", 2, 3, 7),
@@ -124,7 +153,10 @@ async def _seed_core_data() -> None:
                     {"crane": 2, "manpower": 18}),
             ],
             "deps": [("C-02", "C-01")],
-            "limits": [("crane", 2), ("manpower", 20)],
+            "limits": [
+                ("crane", 2),
+                ("manpower", 20),
+            ],
             "risk": [
                 ("C-01", 2, 4, 8),
                 ("C-02", 4, 6, 11),
@@ -173,7 +205,10 @@ async def _seed_core_data() -> None:
                 ("PF", "PA2"),
                 ("PF", "PB2"),
             ],
-            "limits": [("crane", 1), ("manpower", 20)],
+            "limits": [
+                ("crane", 1),
+                ("manpower", 20),
+            ],
             "risk": [
                 ("PA0", 1, 2, 4),
                 ("PA1", 3, 4, 8),
@@ -287,6 +322,11 @@ async def _seed_core_data() -> None:
                         )
 
                 # Phase 8 — 專案資源上限 (冪等：project_id + resource_type 唯一)
+                # Pro Batch D (FEATURE D1)：僅「新建列」帶入示範 unit_cost/
+                # category (_SEED_RESOURCE_RATES 查表)。既有列一律不動 ——
+                # 既有 dev DB 的一次性回填由 _ensure_batch6_columns 於 ALTER
+                # 新增欄位的當次完成，避免以「值是否為 0」猜測而覆寫使用者
+                # 刻意設定的 unit_cost=0 (backward-compat：既有列保持不變)。
                 for resource_type, max_capacity in p.get("limits", []):
                     found = await session.execute(
                         select(ProjectResourceLimit).where(
@@ -295,12 +335,36 @@ async def _seed_core_data() -> None:
                         )
                     )
                     if found.scalar_one_or_none() is None:
+                        unit_cost, category = _SEED_RESOURCE_RATES.get(
+                            (project_id, resource_type), (0.0, "labor")
+                        )
                         session.add(
                             ProjectResourceLimit(
                                 project_id=project_id,
                                 tenant_id=p["tenant_id"],
                                 resource_type=resource_type,
                                 max_capacity=max_capacity,
+                                unit_cost=unit_cost,
+                                category=category,
+                            )
+                        )
+
+                # Pro Batch D (FEATURE D3) — 資源專屬工作日曆 (冪等：
+                # project_id + resource_type 唯一)。
+                for resource_type, work_days in p.get("calendars", []):
+                    found = await session.execute(
+                        select(ResourceCalendar).where(
+                            ResourceCalendar.project_id == project_id,
+                            ResourceCalendar.resource_type == resource_type,
+                        )
+                    )
+                    if found.scalar_one_or_none() is None:
+                        session.add(
+                            ResourceCalendar(
+                                project_id=project_id,
+                                tenant_id=p["tenant_id"],
+                                resource_type=resource_type,
+                                work_days=work_days,
                             )
                         )
 
@@ -741,6 +805,77 @@ async def _ensure_batch5_columns() -> None:
                         label, exc)
 
 
+async def _ensure_batch6_columns() -> None:
+    """冪等為「既有」sqlite dev DB 補上 Pro Batch D 新欄位 (live upgrade，免重建)。
+
+    Pro Batch D (FEATURE D1) 新增：
+      project_resource_limits.unit_cost / category (成本負載 cost loading)。
+    新表 resource_calendars (FEATURE D3) 由 create_all 補建 (create_all 只補
+    「缺漏的表」，不補既有表的欄位，故此處僅需處理既存表的新欄位)。
+
+    對「全新」DB，create_all / init.sql 已含這些欄位；但對「既有」cpm_dev.db，
+    create_all 不會修改既存表，故此處逐欄以 ALTER TABLE ADD COLUMN 補齊 ——
+    沿用 _ensure_batch3/4/5_columns 的已驗證模式：「每句各自 try/except +
+    各自交易」：
+
+      - 欄位已存在 (新庫 / 已升級) -> 該欄 ALTER 失敗 (duplicate column) -> 略過。
+      - 表尚未建立 -> ALTER 失敗 -> 略過 (隨後/先前的 create_all 會建出完整新表)。
+
+    僅針對 sqlite (本機 dev) 執行：PostgreSQL 由 Alembic 0006 / db/init.sql 權威
+    管理。如此既有的 cpm_dev.db 可「無需重建」升級。
+
+    另於「欄位剛新增的當次」一次性回填種子示範費率 (_SEED_RESOURCE_RATES)；
+    之後的啟動不再觸碰既有列 (使用者編輯 —— 含刻意設為 0 —— 永不被覆寫)。
+    """
+    if not is_sqlite():
+        return
+    from sqlalchemy import text
+
+    from app import database
+
+    statements = [
+        ("project_resource_limits.unit_cost",
+         "ALTER TABLE project_resource_limits ADD COLUMN unit_cost REAL "
+         "NOT NULL DEFAULT 0"),
+        ("project_resource_limits.category",
+         "ALTER TABLE project_resource_limits ADD COLUMN category VARCHAR(20) "
+         "NOT NULL DEFAULT 'labor'"),
+    ]
+    columns_newly_added = False
+    for label, ddl in statements:
+        try:
+            async with database.get_engine().begin() as conn:
+                await conn.execute(text(ddl))
+            logger.info("Batch 6 column added: %s (live sqlite upgrade).", label)
+            columns_newly_added = True
+        except Exception as exc:  # noqa: BLE001 - 欄位已存在 / 表未建 皆視為正常
+            logger.info("Batch 6 ALTER skipped for %s (already present?): %s",
+                        label, exc)
+
+    # 一次性回填：僅在「本次啟動剛新增欄位」時，將既有種子示範限制列補上
+    # 示範費率/類別。此時點所有列的 unit_cost/category 必為 ALTER 預設值
+    # (0 / 'labor')，不可能是使用者編輯過的值 -> 回填安全。之後的啟動
+    # (欄位已存在) 絕不觸碰既有列：使用者刻意設定 unit_cost=0 不會被覆寫。
+    if columns_newly_added:
+        try:
+            async with database.get_engine().begin() as conn:
+                for (pid, rtype), (unit_cost, category) in (
+                    _SEED_RESOURCE_RATES.items()
+                ):
+                    await conn.execute(
+                        text(
+                            "UPDATE project_resource_limits "
+                            "SET unit_cost = :unit_cost, category = :category "
+                            "WHERE project_id = :pid AND resource_type = :rtype"
+                        ),
+                        {"unit_cost": unit_cost, "category": category,
+                         "pid": pid, "rtype": rtype},
+                    )
+            logger.info("Batch 6 seed rate backfill applied (one-time).")
+        except Exception as exc:  # noqa: BLE001 - 回填為 best-effort
+            logger.info("Batch 6 seed rate backfill skipped: %s", exc)
+
+
 async def _bootstrap_database() -> None:
     """啟動時的資料庫初始化 (create_all + 種子)，全程 best-effort。
 
@@ -782,6 +917,14 @@ async def _bootstrap_database() -> None:
             await _ensure_batch5_columns()
         except Exception as exc:  # noqa: BLE001
             logger.info("Batch 5 column ensure skipped: %s", exc)
+
+        # Pro Batch D：為既有 sqlite dev DB 冪等補上成本負載新欄位
+        # (project_resource_limits.unit_cost / category)。新表 resource_calendars
+        # 由 create_all 補建。須在 _seed_core_data「之前」執行 —— 理由同上。
+        try:
+            await _ensure_batch6_columns()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Batch 6 column ensure skipped: %s", exc)
 
         try:
             await _seed_core_data()
@@ -910,6 +1053,12 @@ for _mod_path, _label in (
     # best-effort 掛載：Pro Batch C 其餘工作項 (QR deep-link / 前端現場模式)
     # 為並行工作項；若於某中間狀態尚未就緒則記錄並略過 (不中斷啟動)。
     ("app.routers.photos", "photos"),
+    # Pro Batch D — 資源池 / 費率 / 成本負載 (cost) 與 DCMA 14-point 排程健康
+    # 評估 (dcma)。以 best-effort 匯入掛載：Pro Batch D 其餘工作項 (前端
+    # CostPanel / HealthPanel / 資源日曆) 為並行工作項；若於某中間狀態尚未
+    # 就緒則記錄並略過 (不中斷啟動)。
+    ("app.routers.cost", "cost"),
+    ("app.routers.dcma", "dcma"),
 ):
     try:
         import importlib

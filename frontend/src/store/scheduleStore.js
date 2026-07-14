@@ -38,6 +38,9 @@ export const LOADING_SCOPES = [
   // ---- Pro Batch C：行動裝置現場回報（任務照片 + 離線佇列同步）----
   'photos',
   'fieldQueue',
+  // ---- Pro Batch D：資源成本負荷 + DCMA 14 點排程健康度 ----
+  'cost',
+  'health',
 ]
 
 function readLS(key, fallback) {
@@ -142,6 +145,12 @@ export const useScheduleStore = create((set, get) => ({
   // fieldQueueCount  : number（離線佇列待同步筆數；FieldMode 掛載 + 上線事件時刷新）
   photosByTask: {},
   fieldQueueCount: 0,
+
+  // ---- Pro Batch D：資源成本負荷 (D1) + DCMA 14 點排程健康度 (D2) ----
+  // cost   : CostResult（total_cost / by_resource / by_category / by_wbs / per_task / cost_curve） | null
+  // health : DcmaReport（14 項檢查 + score/passed_count/applicable_count） | null
+  cost: null,
+  health: null,
 
   // ---- Batch 4：scoped loading/error 內部輔助 ----
 
@@ -266,6 +275,9 @@ export const useScheduleStore = create((set, get) => ({
       importReport: null,
       // 重置 Pro Batch C：任務照片快取（離線佇列待同步筆數為裝置層級，不隨登出清除）
       photosByTask: {},
+      // 重置 Pro Batch D：成本負荷 + DCMA 健康度
+      cost: null,
+      health: null,
     })
   },
 
@@ -301,6 +313,9 @@ export const useScheduleStore = create((set, get) => ({
       importReport: null,
       // 切換租戶：清空 Pro Batch C 任務照片快取（避免跨租戶殘留）
       photosByTask: {},
+      // 切換租戶：清空 Pro Batch D 成本負荷 + DCMA 健康度（避免跨租戶殘留）
+      cost: null,
+      health: null,
     })
   },
 
@@ -341,6 +356,9 @@ export const useScheduleStore = create((set, get) => ({
       baselines: [],
       // Pro Batch C：切換專案時重置任務照片快取（不可跨專案沿用）
       photosByTask: {},
+      // Pro Batch D：切換專案時重置成本負荷 + DCMA 健康度（不可跨專案沿用）
+      cost: null,
+      health: null,
     })
     get()._start('project')
     try {
@@ -371,6 +389,9 @@ export const useScheduleStore = create((set, get) => ({
       baselines: [],
       // Pro Batch C：新建專案時重置任務照片快取（不可跨專案沿用）
       photosByTask: {},
+      // Pro Batch D：新建專案時重置成本負荷 + DCMA 健康度（不可跨專案沿用）
+      cost: null,
+      health: null,
     })
     get()._start('mutation')
     try {
@@ -847,6 +868,42 @@ export const useScheduleStore = create((set, get) => ({
     }
   },
 
+  // ---- Pro Batch D：資源成本負荷 (D1) ----
+
+  // 載入當前專案成本負荷（依 CPM 持久化欄位 + 資源費率/類別彙總）；存入 store.cost
+  loadCost: async () => {
+    const cur = get().currentProject
+    if (!cur) return null
+    get()._start('cost')
+    try {
+      const cost = await api.getCost(cur.project_id)
+      set({ cost })
+      get()._ok('cost')
+      return cost
+    } catch (err) {
+      get()._fail('cost', err)
+      throw err
+    }
+  },
+
+  // ---- Pro Batch D：DCMA 14 點排程健康度評估 (D2) ----
+
+  // 載入當前專案 DCMA 14 點排程健康度評估（dataDate 選用，預設專案總工期）；存入 store.health
+  loadHealth: async (dataDate) => {
+    const cur = get().currentProject
+    if (!cur) return null
+    get()._start('health')
+    try {
+      const health = await api.getHealth(cur.project_id, dataDate)
+      set({ health })
+      get()._ok('health')
+      return health
+    } catch (err) {
+      get()._fail('health', err)
+      throw err
+    }
+  },
+
   // ---- Pro Batch A：P6 XER + MS Project MSPDI XML 匯入 ----
 
   // 匯入專案檔案（P6 .xer 或 MS Project MSPDI .xml）：後端解析建檔（新專案 + WBS +
@@ -870,6 +927,8 @@ export const useScheduleStore = create((set, get) => ({
       wbs: [],
       baselines: [],
       photosByTask: {},
+      cost: null,
+      health: null,
     })
     get()._start('import')
     try {

@@ -471,6 +471,22 @@ export function photoUrl(photoId) {
   return `${base}/photos/${encodeURIComponent(photoId)}`
 }
 
+// ---- Pro Batch D：資源成本負荷 (D1) + DCMA 14 點排程健康度 (D2) ----
+
+// 取得專案成本負荷（依 CPM 持久化欄位 + 資源費率/類別 + WBS 分類彙總）-> CostResult
+export async function getCost(projectId) {
+  const res = await apiClient.get(`/projects/${encodeURIComponent(projectId)}/cost`)
+  return res.data
+}
+
+// 取得 DCMA 14 點排程健康度評估（data_date 選用，預設專案總工期）-> DcmaReport
+export async function getHealth(projectId, dataDate) {
+  const params = {}
+  if (dataDate != null && dataDate !== '') params.data_date = dataDate
+  const res = await apiClient.get(`/projects/${encodeURIComponent(projectId)}/health`, { params })
+  return res.data
+}
+
 // 任務 QR 深連結圖片 URL（GET image/png；唯讀，viewer 亦可）。
 // 掃描後開啟 "/?field=1&project={pid}&task={tid}"，同網域裝置可直接進入現場模式。
 export function qrUrl(projectId, taskId) {

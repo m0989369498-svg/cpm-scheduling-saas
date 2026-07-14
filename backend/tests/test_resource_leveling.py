@@ -38,8 +38,9 @@ crane0)；該窗共 4 個 crane-day，足以容納 MID(2)+SHORT(1)=3 個 crane-d
 
 from __future__ import annotations
 
+from app.core.cpm_engine import calculate_cpm
 from app.core.resource_leveling import level_resources
-from app.schemas.schedule import TaskDefinition
+from app.schemas.schedule import DependencyLink, TaskDefinition
 
 
 # --------------------------------------------------------------------------- #
@@ -182,3 +183,105 @@ def test_no_conflict_schedule_is_identical():
     # 既無超載日、亦無未解決衝突。
     assert result.over_capacity_days == []
     assert result.unresolved == []
+
+
+# --------------------------------------------------------------------------- #
+# 情境 3：相依型態 (SS/FF/SF) + 延時 (lag) + 活動限制 —— 撫平引擎的內部
+# CPM 必須與 calculate_cpm 完全一致（回歸：Pro Batch D 修正撫平引擎僅支援
+# FS+0 的缺陷；否則 availability 陣列（依 calculate_cpm 工期建立）與撫平
+# 實際落點錯位，資源日曆會在關鍵日被繞過）。
+# --------------------------------------------------------------------------- #
+def _typed_link_tasks() -> list[TaskDefinition]:
+    # A dur10 (無 crane 需求)；B 以 SS+3 依賴 A（正確語義：B.es = A.es + 3 = 3）。
+    # C 以 FS+2 依賴 A（C.es = A.ef + 2 = 12）。
+    return [
+        TaskDefinition(task_id="A", task_name="主體", duration=10, links=[]),
+        TaskDefinition(
+            task_id="B",
+            task_name="平行起步",
+            duration=4,
+            links=[DependencyLink(predecessor_task_id="A", dep_type="SS", lag_days=3)],
+        ),
+        TaskDefinition(
+            task_id="C",
+            task_name="延時收尾",
+            duration=1,
+            links=[DependencyLink(predecessor_task_id="A", dep_type="FS", lag_days=2)],
+        ),
+    ]
+
+
+def test_leveling_honors_dep_types_and_lags():
+    """無資源衝突時，撫平結果的 es/ef 必須與 calculate_cpm 逐一相同
+    （SS/lag 不得被降級為 FS+0）。"""
+    tasks = _typed_link_tasks()
+    demands = {"B": {"crane": 1}}
+    limits = {"crane": 5}  # 充裕上限 -> 不觸發任何推遲
+
+    expected = calculate_cpm(tasks)
+    result = level_resources(tasks, demands, limits)
+    by_id = _result_by_id(result)
+
+    for tid in ("A", "B", "C"):
+        assert (by_id[tid].es, by_id[tid].ef) == (
+            expected[tid].es,
+            expected[tid].ef,
+        ), f"{tid} 的排程須與 calculate_cpm 相同"
+
+    # SS+3 的正確落點：B 於 day 3 開始（而非 A 完成後的 day 10）。
+    assert (by_id["B"].es, by_id["B"].ef) == (3, 7)
+    # FS+2 延時：C 於 day 12 開始。
+    assert (by_id["C"].es, by_id["C"].ef) == (12, 13)
+    assert result.original_duration == 13
+    assert result.leveled_duration == 13
+    assert result.extended is False
+
+
+def test_leveling_honors_activity_constraints():
+    """SNET 活動限制（constraint_type/constraint_day）亦須在撫平引擎中生效。"""
+    tasks = [
+        TaskDefinition(task_id="A", task_name="前段", duration=2, predecessors=[]),
+        TaskDefinition(
+            task_id="B",
+            task_name="限制起步",
+            duration=3,
+            predecessors=["A"],
+            constraint_type="SNET",
+            constraint_day=5,
+        ),
+    ]
+    expected = calculate_cpm(tasks)
+    result = level_resources(tasks, {"B": {"crane": 1}}, {"crane": 5})
+    by_id = _result_by_id(result)
+
+    assert (by_id["B"].es, by_id["B"].ef) == (expected["B"].es, expected["B"].ef)
+    assert by_id["B"].es == 5  # SNET day5 生效（依賴推導僅為 day2）
+    assert result.leveled_duration == 8
+
+
+def test_leveling_with_ss_link_still_resolves_conflicts():
+    """SS 依賴下的資源衝突仍能以推遲可移動任務化解（撫平邏輯 + 型態語義並存）。"""
+    tasks = [
+        TaskDefinition(task_id="A", task_name="主體", duration=10, links=[]),
+        TaskDefinition(
+            task_id="B",
+            task_name="平行工項",
+            duration=4,
+            links=[DependencyLink(predecessor_task_id="A", dep_type="SS", lag_days=3)],
+        ),
+    ]
+    demands = {"A": {"crane": 1}, "B": {"crane": 1}}
+    limits = {"crane": 1}  # day3..6 A+B 同日需求 2 > 1 -> B (有 float=3) 被推遲
+
+    result = level_resources(tasks, demands, limits)
+    by_id = _result_by_id(result)
+
+    # 要徑 A 不動；B 自 SS 推導的 es=3 (float=3) 被逐日推遲直到 float 用盡
+    # (es=6, ef=10)。啟發法「永不展延要徑 / 不推遲 float<=0 任務」-> 剩餘
+    # day6..9 衝突無法化解，如實記入 unresolved 與 over_capacity_days。
+    assert (by_id["A"].es, by_id["A"].ef) == (0, 10)
+    assert by_id["B"].es == 6, "B 應被推遲至 float 用盡處 (SS 語義下的極限)"
+    assert result.leveled_duration == result.original_duration == 10
+    assert result.extended is False
+    assert result.over_capacity_days == [6, 7, 8, 9]
+    assert result.unresolved == ["A", "B"]

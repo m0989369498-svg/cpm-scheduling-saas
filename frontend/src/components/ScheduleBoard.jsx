@@ -8,6 +8,8 @@ import ResourcePanel from './ResourcePanel';
 import RiskPanel from './RiskPanel';
 import ProgressPanel from './ProgressPanel';
 import WbsPanel from './WbsPanel';
+import CostPanel from './CostPanel';
+import HealthPanel from './HealthPanel';
 import { FieldPhotoThumb } from './FieldMode.jsx';
 import { groupTasksByWbs } from '../utils/wbsTree.js';
 
@@ -62,6 +64,9 @@ const TAB_ERROR_SCOPES = {
   risk: ['risk', 'simulation'],
   progress: ['progress', 'evm'],
   wbs: ['wbs'],
+  // ---- Pro Batch D：資源成本負荷 + DCMA 14 點排程健康度 ----
+  cost: ['cost'],
+  health: ['health'],
 };
 
 // Pro Batch B Feature 2：限制日（工作日偏移）<-> 實際日期字串互轉（dayDates 提供時使用日期輸入框）
@@ -1167,6 +1172,8 @@ export default function ScheduleBoard() {
               { key: 'resources', label: t(region, 'resourceLeveling') },
               { key: 'risk', label: t(region, 'riskAnalysis') },
               { key: 'progress', label: `${t(region, 'progress')} / ${t(region, 'evm')}` },
+              { key: 'cost', label: t(region, 'costLoading') },
+              { key: 'health', label: t(region, 'dcmaHealth') },
             ].map((tab) => {
               const active = activeTab === tab.key;
               return (
@@ -1203,6 +1210,12 @@ export default function ScheduleBoard() {
 
           {/* ===== 進度 / EVM 分頁（Phase 9） ===== */}
           {activeTab === 'progress' && <ProgressPanel region={region} />}
+
+          {/* ===== 成本負荷分頁（Pro Batch D Feature 1） ===== */}
+          {activeTab === 'cost' && <CostPanel region={region} />}
+
+          {/* ===== DCMA 排程健康度分頁（Pro Batch D Feature 2） ===== */}
+          {activeTab === 'health' && <HealthPanel region={region} />}
 
           {/* ===== 排程分頁（甘特圖 + 任務表格 + 新增任務） ===== */}
           {activeTab === 'schedule' && (

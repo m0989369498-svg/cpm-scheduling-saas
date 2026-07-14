@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.schedule import TaskResult
 
@@ -27,23 +27,54 @@ class ResourceLimit(BaseModel):
 
     resource_type 例如 "crane"（吊車）、"manpower"（人力）。
     max_capacity 為每日可用的最大數量（>= 0）。
+    Pro Batch D (FEATURE D1)：
+      unit_cost 每單位資源每工作日的成本（>= 0，預設 0）。
+      category  資源類別，labor / equipment / material / subcontract 之一
+                （預設 labor）。
     """
 
     resource_type: str
     max_capacity: int = Field(ge=0)
+    unit_cost: float = Field(default=0.0, ge=0)
+    category: str = "labor"
+
+
+class ResourceCalendar(BaseModel):
+    """單一資源之工作日曆。Pro Batch D (FEATURE D3)。
+
+    work_days 為 7 碼字串（週一..週日 Mon..Sun），'1'=工作日，語義與
+    ProjectBase.work_days 完全一致。供資源撫平計算逐日可用產能
+    （非其工作日時當日產能視為 0）。
+    """
+
+    resource_type: str
+    work_days: str = "1111110"
+
+    @field_validator("work_days")
+    @classmethod
+    def _validate_work_days(cls, value: str) -> str:
+        """work_days 必須為 7 碼、僅含 0/1（週一..週日）。"""
+        if len(value) != 7 or any(ch not in "01" for ch in value):
+            raise ValueError(
+                "work_days 必須為 7 碼 0/1 字串（週一..週日 Mon..Sun）"
+            )
+        return value
 
 
 class ResourceConfig(BaseModel):
     """專案資源組態（讀 / 寫共用）。
 
-    limits   各資源類別的每日上限清單。
-    demands  每個任務的資源需求；外層 key 為 task_id，
-             內層為 {resource_type: amount}，例如
-             {"T-01": {"crane": 1, "manpower": 10}}。
+    limits     各資源類別的每日上限清單（含 unit_cost / category）。
+    demands    每個任務的資源需求；外層 key 為 task_id，
+               內層為 {resource_type: amount}，例如
+               {"T-01": {"crane": 1, "manpower": 10}}。
+    calendars  各資源的專屬工作日曆（Pro Batch D FEATURE D3；選填，
+               未列出的資源退回專案層級純量上限）。
     """
 
     limits: list[ResourceLimit] = Field(default_factory=list)
     demands: dict[str, dict[str, int]] = Field(default_factory=dict)
+    calendars: list[ResourceCalendar] = Field(default_factory=list)
 
 
 class DayLoad(BaseModel):
