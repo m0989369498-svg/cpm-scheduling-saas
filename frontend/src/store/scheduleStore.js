@@ -41,6 +41,9 @@ export const LOADING_SCOPES = [
   // ---- Pro Batch D：資源成本負荷 + DCMA 14 點排程健康度 ----
   'cost',
   'health',
+  // ---- Pro Batch E：租戶層級資源池 + 投資組合資源分配 ----
+  'pool',
+  'allocation',
 ]
 
 function readLS(key, fallback) {
@@ -151,6 +154,14 @@ export const useScheduleStore = create((set, get) => ({
   // health : DcmaReport（14 項檢查 + score/passed_count/applicable_count） | null
   cost: null,
   health: null,
+
+  // ---- Pro Batch E：租戶層級資源池 (E1) + 投資組合資源分配 (E1) ----
+  // pool       : list[TenantResource]（tenant_resources 整批取代 upsert 草稿來源） | []
+  // allocation : ResourceAllocationResult（weeks + resources[each with by_week/peak/over_weeks] +
+  //              unscheduled_projects + warnings） | null
+  // 皆為租戶層級（非專案層級）-> 僅於 logout / setTenant 重置，不隨 loadProject/createProject 重置。
+  pool: [],
+  allocation: null,
 
   // ---- Batch 4：scoped loading/error 內部輔助 ----
 
@@ -278,6 +289,9 @@ export const useScheduleStore = create((set, get) => ({
       // 重置 Pro Batch D：成本負荷 + DCMA 健康度
       cost: null,
       health: null,
+      // 重置 Pro Batch E：租戶層級資源池 + 投資組合資源分配
+      pool: [],
+      allocation: null,
     })
   },
 
@@ -316,6 +330,9 @@ export const useScheduleStore = create((set, get) => ({
       // 切換租戶：清空 Pro Batch D 成本負荷 + DCMA 健康度（避免跨租戶殘留）
       cost: null,
       health: null,
+      // 切換租戶：清空 Pro Batch E 資源池 + 投資組合資源分配（避免跨租戶殘留）
+      pool: [],
+      allocation: null,
     })
   },
 
@@ -900,6 +917,50 @@ export const useScheduleStore = create((set, get) => ({
       return health
     } catch (err) {
       get()._fail('health', err)
+      throw err
+    }
+  },
+
+  // ---- Pro Batch E：租戶層級資源池 + 投資組合資源分配 (E1) ----
+
+  // 載入租戶資源池（list[TenantResource]，依 resource_type 排序）；存入 store.pool
+  loadPool: async () => {
+    get()._start('pool')
+    try {
+      const pool = await api.getPool()
+      set({ pool: Array.isArray(pool) ? pool : [] })
+      get()._ok('pool')
+      return pool
+    } catch (err) {
+      get()._fail('pool', err)
+      throw err
+    }
+  },
+
+  // 儲存租戶資源池（依 resource_type 整批 upsert；未列出者保留）；回傳並更新 store.pool
+  savePool: async (list) => {
+    get()._start('pool')
+    try {
+      const pool = await api.savePool(list)
+      set({ pool: Array.isArray(pool) ? pool : [] })
+      get()._ok('pool')
+      return pool
+    } catch (err) {
+      get()._fail('pool', err)
+      throw err
+    }
+  },
+
+  // 載入投資組合資源分配（依 ISO 週彙總各資源逐週尖峰需求 vs 產能）；存入 store.allocation
+  loadAllocation: async () => {
+    get()._start('allocation')
+    try {
+      const allocation = await api.getAllocation()
+      set({ allocation })
+      get()._ok('allocation')
+      return allocation
+    } catch (err) {
+      get()._fail('allocation', err)
       throw err
     }
   },

@@ -494,4 +494,25 @@ export function qrUrl(projectId, taskId) {
   return `${base}/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/qr.png`
 }
 
+// ---- Pro Batch E：租戶層級資源池 (E1) + 投資組合資源分配 (E1) ----
+
+// 取得租戶資源池（list[TenantResource]，依 resource_type 排序）
+export async function getPool() {
+  const res = await apiClient.get('/resources/pool')
+  return res.data
+}
+
+// 設定租戶資源池（依 resource_type 整批 upsert；未列出者保留現有值）
+export async function savePool(list) {
+  const res = await apiClient.put('/resources/pool', list)
+  return res.data
+}
+
+// 取得投資組合資源分配（ResourceAllocationResult：weeks + resources[by_week/peak/over_weeks] +
+// unscheduled_projects + warnings）；唯讀，viewer 亦可
+export async function getAllocation() {
+  const res = await apiClient.get('/resources/allocation')
+  return res.data
+}
+
 export default apiClient

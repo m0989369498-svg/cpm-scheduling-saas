@@ -446,6 +446,10 @@ def _parse_tasks(
             row, task_code=task_code, start_date=start_date, warnings=warnings
         )
 
+        percent_complete, actual_start, actual_finish = _parse_task_actuals(
+            row, task_code=task_code, warnings=warnings
+        )
+
         tasks.append(
             InteropTask(
                 task_id=task_code,
@@ -456,6 +460,9 @@ def _parse_tasks(
                 constraint_type=constraint_type,
                 constraint_day=constraint_day,
                 links=[],
+                percent_complete=percent_complete,
+                actual_start=actual_start,
+                actual_finish=actual_finish,
             )
         )
 
@@ -497,6 +504,51 @@ def _parse_task_constraint(
 
     constraint_day = date_to_offset(start_date, cstr_date, _DEFAULT_WORK_DAYS, set())
     return mapped, constraint_day
+
+
+def _parse_task_actuals(
+    row: dict[str, str],
+    *,
+    task_code: str,
+    warnings: list[str],
+) -> tuple[int, date | None, date | None]:
+    """解析 TASK 資料列的實績欄位 (Pro Batch E FEATURE E3)：
+
+    phys_complete_pct (0..100，夾在範圍內) -> percent_complete；
+    act_start_date / act_end_date -> actual_start / actual_finish。
+    無法解析一律記警告 + 合理預設值 (0 / None)，絕不使整份檔案匯入失敗。
+    """
+    percent_complete = 0
+    raw_pct = row.get("phys_complete_pct")
+    if raw_pct:
+        try:
+            # round(inf) 擲出 OverflowError、round(nan) 擲出 ValueError ——
+            # 兩者一律降級為警告 + 預設 0（絕不使整份檔案匯入失敗）。
+            percent_complete = max(0, min(100, round(float(raw_pct))))
+        except (ValueError, OverflowError):
+            warnings.append(
+                f"TASK {task_code} 的 phys_complete_pct 無法解析，預設 0：{raw_pct!r}"
+            )
+
+    actual_start: date | None = None
+    raw_start = row.get("act_start_date")
+    if raw_start:
+        actual_start = _parse_xer_date(raw_start)
+        if actual_start is None:
+            warnings.append(
+                f"TASK {task_code} 的 act_start_date 無法解析：{raw_start!r}"
+            )
+
+    actual_finish: date | None = None
+    raw_finish = row.get("act_end_date")
+    if raw_finish:
+        actual_finish = _parse_xer_date(raw_finish)
+        if actual_finish is None:
+            warnings.append(
+                f"TASK {task_code} 的 act_end_date 無法解析：{raw_finish!r}"
+            )
+
+    return percent_complete, actual_start, actual_finish
 
 
 def _apply_taskpred(
@@ -606,12 +658,14 @@ def generate_xer(interop: InteropProject, *, hours_per_day: float = 8.0) -> str:
             f"%R\t{wbs_id}\t{proj_id}\t{parent_id}\t{node.wbs_code}\t{node.name}\tN"
         )
 
-    # TASK
+    # TASK（Pro Batch E FEATURE E3：另帶 phys_complete_pct / act_start_date /
+    # act_end_date 三個實績欄位，供匯入端往返還原 task_progress）。
     lines.append("%T\tTASK")
     lines.append(
         "%F\ttask_id\tproj_id\twbs_id\tclndr_id\ttask_code\ttask_name"
         "\ttask_type\tduration_type\tcomplete_pct_type"
         "\ttarget_drtn_hr_cnt\tstatus_code\tcstr_type\tcstr_date"
+        "\tphys_complete_pct\tact_start_date\tact_end_date"
     )
     task_id_map: dict[str, int] = {}
     next_task_id = 1
@@ -630,10 +684,14 @@ def generate_xer(interop: InteropProject, *, hours_per_day: float = 8.0) -> str:
             cstr_type = _CONSTRAINT_TO_XER.get(task.constraint_type, "")
             cstr_dt = offset_to_date(start_date, task.constraint_day, work_days, holidays)
             cstr_date = cstr_dt.isoformat()
+        phys_complete_pct = max(0, min(100, int(task.percent_complete or 0)))
+        act_start_date = task.actual_start.isoformat() if task.actual_start else ""
+        act_end_date = task.actual_finish.isoformat() if task.actual_finish else ""
         lines.append(
             f"%R\t{xer_id}\t{proj_id}\t{wbs_id}\t{clndr_id}\t{task.task_id}"
             f"\t{task.task_name}\tTT_Task\tDT_FixedDrtn\tCP_Drtn\t{hours:g}"
             f"\t{status_code}\t{cstr_type}\t{cstr_date}"
+            f"\t{phys_complete_pct}\t{act_start_date}\t{act_end_date}"
         )
 
     # TASKPRED（pred_proj_id = proj_id：本產生器僅輸出單一專案的內部相依）

@@ -55,6 +55,21 @@ _SEED_RESOURCE_RATES: dict[tuple[str, str], tuple[float, str]] = {
     ("PRJ-2026-TW-PARALLEL", "manpower"): (260.0, "labor"),
 }
 
+# Pro Batch E (FEATURE E1) —— 租戶層級 (enterprise) 資源池示範資料 (單一事實來源)：
+#   {tenant_id: [(resource_type, name, category, capacity, unit_cost, work_days), ...]}
+# 用途：_seed_core_data 冪等寫入 tenant_resources (供投資組合資源分配示範)。
+_SEED_TENANT_RESOURCES: dict[str, list[tuple[str, str, str, int, float, str]]] = {
+    "TENT-9981": [
+        ("crane", "吊車", "equipment", 2, 3200.0, "1111100"),
+        ("manpower", "人力", "labor", 40, 260.0, "1111110"),
+        ("concrete_pump", "混凝土泵浦車", "equipment", 1, 5000.0, "1111100"),
+    ],
+    "TENT-CN-002": [
+        ("crane", "塔吊", "equipment", 2, 2800.0, "1111100"),
+        ("manpower", "人力", "labor", 30, 220.0, "1111110"),
+    ],
+}
+
 
 async def _seed_core_data() -> None:
     """冪等寫入核心示範資料 (僅在 sqlite / dev_bootstrap 模式呼叫)。
@@ -72,10 +87,12 @@ async def _seed_core_data() -> None:
         ProjectBaseline,
         ProjectResourceLimit,
         ResourceCalendar,
+        ResourceCalendarHoliday,
         Task,
         TaskDependency,
         TaskProgress,
         TaskRiskParameter,
+        TenantResource,
         Tenant,
     )
 
@@ -446,6 +463,51 @@ async def _seed_core_data() -> None:
                             is_active=True,
                         )
                     )
+
+            # Pro Batch E (FEATURE E1) — 租戶層級資源池 (冪等：tenant_id +
+            # resource_type 唯一)。
+            for tenant_id, resources in _SEED_TENANT_RESOURCES.items():
+                for resource_type, name, category, capacity, unit_cost, work_days in resources:
+                    found = await session.execute(
+                        select(TenantResource).where(
+                            TenantResource.tenant_id == tenant_id,
+                            TenantResource.resource_type == resource_type,
+                        )
+                    )
+                    if found.scalar_one_or_none() is None:
+                        session.add(
+                            TenantResource(
+                                tenant_id=tenant_id,
+                                resource_type=resource_type,
+                                name=name,
+                                category=category,
+                                capacity=capacity,
+                                unit_cost=unit_cost,
+                                work_days=work_days,
+                            )
+                        )
+
+            # Pro Batch E (FEATURE E2) — 單一資源專屬例外停工日示範 (冪等：
+            # project_id + resource_type + holiday_date 唯一)：吊車保養日示範。
+            from datetime import date as _seed_date
+
+            found = await session.execute(
+                select(ResourceCalendarHoliday.id).where(
+                    ResourceCalendarHoliday.project_id == "PRJ-2026-TW-001",
+                    ResourceCalendarHoliday.resource_type == "crane",
+                    ResourceCalendarHoliday.holiday_date == _seed_date(2026, 7, 20),
+                )
+            )
+            if found.first() is None:
+                session.add(
+                    ResourceCalendarHoliday(
+                        project_id="PRJ-2026-TW-001",
+                        tenant_id="TENT-9981",
+                        resource_type="crane",
+                        holiday_date=_seed_date(2026, 7, 20),
+                        name="吊車保養日",
+                    )
+                )
 
 
 async def _seed_app_users() -> None:
@@ -1059,6 +1121,10 @@ for _mod_path, _label in (
     # 就緒則記錄並略過 (不中斷啟動)。
     ("app.routers.cost", "cost"),
     ("app.routers.dcma", "dcma"),
+    # Pro Batch E — 企業級 (tenant-level) 資源池 + 投資組合資源分配 (enterprise)。
+    # 以 best-effort 匯入掛載：Pro Batch E 其餘工作項 (前端 EnterpriseResourcePanel)
+    # 為並行工作項；若於某中間狀態尚未就緒則記錄並略過 (不中斷啟動)。
+    ("app.routers.enterprise", "enterprise"),
 ):
     try:
         import importlib

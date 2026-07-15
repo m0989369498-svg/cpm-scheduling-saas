@@ -31,6 +31,7 @@ WBS 階層推導：以 <OutlineNumber>（MS Project 保證以 "." 分段的階�
 
 from __future__ import annotations
 
+import math
 import re
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -180,11 +181,32 @@ def _status_from_percent(text: str | None) -> str:
         pct = float(text)
     except ValueError:
         return "PENDING"
+    if not math.isfinite(pct):
+        # 'inf'/'nan' 等非有限值視同無法解析（與 _parse_percent_complete
+        # 的降級預設 0 保持一致，避免 percent=0 卻標記 COMPLETED）。
+        return "PENDING"
     if pct >= 100:
         return "COMPLETED"
     if pct > 0:
         return "IN_PROGRESS"
     return "PENDING"
+
+
+def _parse_percent_complete(
+    text: str | None, warnings: list[str], uid: str
+) -> int:
+    """解析 PercentComplete 為 0..100 的整數 (Pro Batch E FEATURE E3)；
+    缺席或無法解析 -> 0 + 警告 (無法解析時)。"""
+    if text is None:
+        return 0
+    try:
+        # round(inf) 擲出 OverflowError、round(nan) 擲出 ValueError ——
+        # 兩者一律降級為警告 + 預設 0（絕不使整份檔案匯入失敗）。
+        pct = round(float(text))
+    except (ValueError, OverflowError):
+        warnings.append(f"PercentComplete 無法解析（UID={uid}）：{text!r}，預設 0")
+        return 0
+    return max(0, min(100, pct))
 
 
 def _parent_code(code: str) -> str | None:
@@ -338,7 +360,16 @@ def parse_mspdi(xml_text: str, *, hours_per_day: float = 8.0) -> InteropProject:
         )
         duration_days = 0 if is_milestone else max(0, round(duration_hours / hpd))
 
-        status = _status_from_percent(_text(task_el, "PercentComplete"))
+        percent_text = _text(task_el, "PercentComplete")
+        status = _status_from_percent(percent_text)
+        percent_complete = _parse_percent_complete(percent_text, warnings, uid)
+
+        actual_start = _parse_date(
+            _text(task_el, "ActualStart"), warnings, f"ActualStart（UID={uid}）"
+        )
+        actual_finish = _parse_date(
+            _text(task_el, "ActualFinish"), warnings, f"ActualFinish（UID={uid}）"
+        )
 
         constraint_type, constraint_day = _parse_constraint(
             task_el, start_date, warnings, uid
@@ -397,6 +428,9 @@ def parse_mspdi(xml_text: str, *, hours_per_day: float = 8.0) -> InteropProject:
                 constraint_type=constraint_type,
                 constraint_day=constraint_day,
                 links=links,
+                percent_complete=percent_complete,
+                actual_start=actual_start,
+                actual_finish=actual_finish,
             )
         )
 
@@ -577,6 +611,20 @@ def generate_mspdi(interop: InteropProject) -> str:
         lines.append(
             f"      <Duration>PT{int(round((t.duration_days or 0) * hpd))}H0M0S</Duration>"
         )
+        # Pro Batch E (FEATURE E3)：實績 (actuals) 往返 —— PercentComplete 恆輸出；
+        # ActualStart/ActualFinish 僅在有值時輸出 (省略 = 未回報實績)。
+        lines.append(
+            f"      <PercentComplete>{max(0, min(100, int(t.percent_complete or 0)))}"
+            "</PercentComplete>"
+        )
+        if t.actual_start is not None:
+            lines.append(
+                f"      <ActualStart>{t.actual_start.isoformat()}T08:00:00</ActualStart>"
+            )
+        if t.actual_finish is not None:
+            lines.append(
+                f"      <ActualFinish>{t.actual_finish.isoformat()}T08:00:00</ActualFinish>"
+            )
         ctype_num = _CONSTRAINT_EXPORT.get(t.constraint_type, 0)
         lines.append(f"      <ConstraintType>{ctype_num}</ConstraintType>")
         if t.constraint_type is not None and t.constraint_day is not None:

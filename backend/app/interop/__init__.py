@@ -48,7 +48,12 @@ class InteropWbsNode(object):
 
 @dataclass
 class InteropTask(object):
-    """單一任務：對應 schemas.schedule.TaskDefinition 的匯入/匯出中介表示。"""
+    """單一任務：對應 schemas.schedule.TaskDefinition 的匯入/匯出中介表示。
+
+    Pro Batch E (FEATURE E3)：percent_complete / actual_start / actual_finish
+    承載「實績」(actuals) —— 匯入端讀取來源檔案的完成度與實際起訖日，匯出端
+    自 task_progress 回填，供 XER / MSPDI 匯入匯出往返 (round-trip)。
+    """
 
     task_id: str
     task_name: str = ""
@@ -58,6 +63,9 @@ class InteropTask(object):
     constraint_type: str | None = None
     constraint_day: int | None = None
     links: list[InteropLink] = field(default_factory=list)
+    percent_complete: int = 0
+    actual_start: date | None = None
+    actual_finish: date | None = None
 
 
 @dataclass

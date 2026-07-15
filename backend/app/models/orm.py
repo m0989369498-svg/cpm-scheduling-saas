@@ -351,6 +351,74 @@ class ResourceCalendar(Base):
     )
 
 
+class TenantResource(Base):
+    """租戶層級 (enterprise) 資源池 (tenant_resources)。Pro Batch E (FEATURE E1)。
+
+    與 project_resource_limits 不同：本表以 tenant_id 為範圍 (而非單一專案)，
+    供跨專案的投資組合資源分配 (portfolio resource allocation) 彙總使用。
+    受 RLS 保護 (與 project_resource_limits 一致)，故置於 public schema。
+    (tenant_id, resource_type) 唯一 —— PUT /resources/pool 以此 upsert。
+    """
+
+    __tablename__ = "tenant_resources"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "resource_type", name="uq_tenant_resources_tenant_type"
+        ),
+        Index("idx_tenant_resources_tenant", "tenant_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[str] = mapped_column(
+        String(120), nullable=False, server_default=text("''")
+    )
+    category: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'labor'")
+    )
+    capacity: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    unit_cost: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default=text("0")
+    )
+    work_days: Mapped[str] = mapped_column(
+        String(7), nullable=False, server_default=text("'1111100'")
+    )
+
+
+class ResourceCalendarHoliday(Base):
+    """單一資源之工作日曆例外假日 (resource_calendar_holidays)。Pro Batch E (FEATURE E2)。
+
+    補完 Batch D 的 resource_calendars：除了「該資源的週工作日型態」
+    (work_days) 之外，另可設定該資源專屬的例外停工日 (例：吊車保養日)，
+    與專案層級的 project_holidays 語義相同，但範圍限定於單一資源。
+    受 RLS 保護 (與 resource_calendars 一致)，故置於 public schema。
+    (project_id, resource_type, holiday_date) 唯一。
+    """
+
+    __tablename__ = "resource_calendar_holidays"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "resource_type", "holiday_date",
+            name="uq_resource_cal_holidays_project_type_date",
+        ),
+        Index("idx_resource_cal_holidays_project", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    holiday_date: Mapped[date] = mapped_column(Date, nullable=False)
+    name: Mapped[str] = mapped_column(
+        String(120), nullable=False, server_default=text("''")
+    )
+
+
 class TaskRiskParameter(Base):
     """任務風險參數 (task_risk_parameters)。
 

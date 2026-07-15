@@ -839,6 +839,7 @@ export default function ScheduleBoard() {
             <span>{t(region, 'importedWbs')}: {importReport.wbs ?? 0}</span>
             <span>{t(region, 'importedLinks')}: {importReport.links ?? 0}</span>
             <span>{t(region, 'importedConstraints')}: {importReport.constraints ?? 0}</span>
+            <span>{t(region, 'importedActuals')}: {importReport.actuals ?? 0}</span>
           </div>
           {Array.isArray(importReport.warnings) && importReport.warnings.length > 0 && (
             <div style={{ fontSize: '12px', color: '#b9770e' }}>

@@ -79,7 +79,7 @@ from app.interop import (  # noqa: E402
     InteropWbsNode,
 )
 from app.interop.xer import generate_xer, parse_xer  # noqa: E402
-from app.interop.mspdi import parse_mspdi  # noqa: E402
+from app.interop.mspdi import generate_mspdi, parse_mspdi  # noqa: E402
 
 PREFIX = settings.api_v1_prefix
 LOGIN_URL = f"{PREFIX}/auth/login"
@@ -1197,6 +1197,403 @@ def test_export_uses_real_project_calendar_and_holidays(client):
     assert "<ConstraintDate>2026-07-11T08:00:00</ConstraintDate>" in mspdi_resp.text
     assert "<Start>2026-07-11T08:00:00</Start>" in mspdi_resp.text  # es=4 同樣受行事曆影響。
     assert "<ConstraintDate>2026-07-10T08:00:00</ConstraintDate>" not in mspdi_resp.text
+
+
+# =============================================================================
+# Pro Batch E (FEATURE E3) — 實績 (actuals) 匯入/匯出往返
+# =============================================================================
+def test_parse_xer_reads_actuals():
+    """TASK.phys_complete_pct / act_start_date / act_end_date -> InteropTask 實績欄位。"""
+    project_tbl = _xer_table(
+        "PROJECT", ["proj_id", "proj_short_name", "plan_start_date"],
+        [["1", "ACTUALS-TEST", "2026-07-06 00:00"]],
+    )
+    task_tbl = _xer_table(
+        "TASK",
+        [
+            "task_id", "proj_id", "task_code", "task_name", "status_code",
+            "target_drtn_hr_cnt", "phys_complete_pct", "act_start_date", "act_end_date",
+        ],
+        [
+            ["1001", "1", "T-01", "已完成工項", "TK_Complete", "40",
+             "100", "2026-07-06 00:00", "2026-07-10 00:00"],
+            ["1002", "1", "T-02", "尚未開始工項", "TK_NotStart", "8", "", "", ""],
+        ],
+    )
+    interop = parse_xer(_xer_doc(project_tbl, task_tbl))
+    tasks_by_id = {t.task_id: t for t in interop.tasks}
+
+    t01 = tasks_by_id["T-01"]
+    assert t01.percent_complete == 100
+    assert t01.actual_start == date(2026, 7, 6)
+    assert t01.actual_finish == date(2026, 7, 10)
+
+    # 未帶實績欄位的任務 -> 合理預設值 (0 / None)，不影響既有匯入行為。
+    t02 = tasks_by_id["T-02"]
+    assert t02.percent_complete == 0
+    assert t02.actual_start is None
+    assert t02.actual_finish is None
+    assert interop.warnings == []
+
+
+def test_parse_xer_unparseable_actual_dates_warn_not_fail():
+    """無法解析的實績欄位 -> 警告 + 合理預設值，絕不使整份檔案匯入失敗。"""
+    project_tbl = _xer_table(
+        "PROJECT", ["proj_id", "proj_short_name", "plan_start_date"],
+        [["1", "BAD-ACTUALS", "2026-07-06 00:00"]],
+    )
+    task_tbl = _xer_table(
+        "TASK",
+        [
+            "task_id", "proj_id", "task_code", "task_name", "status_code",
+            "target_drtn_hr_cnt", "phys_complete_pct", "act_start_date", "act_end_date",
+        ],
+        [["1001", "1", "T-01", "壞資料工項", "TK_Active", "8",
+          "N/A", "not-a-date", "also-bad"]],
+    )
+    interop = parse_xer(_xer_doc(project_tbl, task_tbl))
+    task = interop.tasks[0]
+    assert task.percent_complete == 0
+    assert task.actual_start is None
+    assert task.actual_finish is None
+    assert len(interop.warnings) >= 1
+
+
+def test_parse_xer_non_finite_percent_warns_not_fail():
+    """phys_complete_pct 為 'inf'/'-inf'/'nan'（float() 可解析但 round() 擲出
+    OverflowError/ValueError）-> 警告 + 預設 0，絕不使整份檔案匯入失敗。"""
+    project_tbl = _xer_table(
+        "PROJECT", ["proj_id", "proj_short_name", "plan_start_date"],
+        [["1", "INF-ACTUALS", "2026-07-06 00:00"]],
+    )
+    task_tbl = _xer_table(
+        "TASK",
+        [
+            "task_id", "proj_id", "task_code", "task_name", "status_code",
+            "target_drtn_hr_cnt", "phys_complete_pct", "act_start_date", "act_end_date",
+        ],
+        [
+            ["1001", "1", "T-01", "無限大", "TK_Active", "8", "inf", "", ""],
+            ["1002", "1", "T-02", "負無限大", "TK_Active", "8", "-inf", "", ""],
+            ["1003", "1", "T-03", "非數", "TK_Active", "8", "nan", "", ""],
+        ],
+    )
+    interop = parse_xer(_xer_doc(project_tbl, task_tbl))  # 不得拋例外。
+    assert [t.percent_complete for t in interop.tasks] == [0, 0, 0]
+    assert len(interop.warnings) == 3
+
+
+def test_parse_xer_percent_clamps_out_of_range():
+    """phys_complete_pct 超出 0..100 -> 夾在範圍內（150 -> 100、-20 -> 0）。"""
+    project_tbl = _xer_table(
+        "PROJECT", ["proj_id", "proj_short_name", "plan_start_date"],
+        [["1", "CLAMP-ACTUALS", "2026-07-06 00:00"]],
+    )
+    task_tbl = _xer_table(
+        "TASK",
+        [
+            "task_id", "proj_id", "task_code", "task_name", "status_code",
+            "target_drtn_hr_cnt", "phys_complete_pct", "act_start_date", "act_end_date",
+        ],
+        [
+            ["1001", "1", "T-01", "超過上限", "TK_Active", "8", "150", "", ""],
+            ["1002", "1", "T-02", "低於下限", "TK_Active", "8", "-20", "", ""],
+        ],
+    )
+    interop = parse_xer(_xer_doc(project_tbl, task_tbl))
+    tasks_by_id = {t.task_id: t for t in interop.tasks}
+    assert tasks_by_id["T-01"].percent_complete == 100
+    assert tasks_by_id["T-02"].percent_complete == 0
+    assert interop.warnings == []  # 可解析（僅超界）-> 夾住即可，無需警告。
+
+
+def test_generate_xer_clamps_out_of_range_percent():
+    """generate_xer 對超界 InteropTask.percent_complete 輸出前夾在 0..100。"""
+    interop = InteropProject(
+        name="GEN-CLAMP",
+        start_date=date(2026, 7, 6),
+        work_days="1111100",
+        tasks=[
+            InteropTask(task_id="T-01", task_name="A", duration_days=1,
+                        percent_complete=150),
+            InteropTask(task_id="T-02", task_name="B", duration_days=1,
+                        percent_complete=-10),
+        ],
+    )
+    text = generate_xer(interop)
+    assert _xer_task_row(text, "T-01")["phys_complete_pct"] == "100"
+    assert _xer_task_row(text, "T-02")["phys_complete_pct"] == "0"
+
+
+def test_generate_xer_emits_actuals_and_reparses_them():
+    """generate_xer 輸出 phys_complete_pct/act_start_date/act_end_date；重新解析可讀回。"""
+    interop = InteropProject(
+        name="GEN-ACTUALS",
+        start_date=date(2026, 7, 6),
+        work_days="1111100",
+        tasks=[
+            InteropTask(
+                task_id="T-01", task_name="A", duration_days=3,
+                percent_complete=75,
+                actual_start=date(2026, 7, 6),
+                actual_finish=date(2026, 7, 8),
+            ),
+            InteropTask(task_id="T-02", task_name="B", duration_days=1),
+        ],
+    )
+    text = generate_xer(interop)
+    assert "phys_complete_pct" in text
+    assert "act_start_date" in text
+    assert "act_end_date" in text
+
+    reparsed = parse_xer(text)
+    tasks_by_id = {t.task_id: t for t in reparsed.tasks}
+    assert tasks_by_id["T-01"].percent_complete == 75
+    assert tasks_by_id["T-01"].actual_start == date(2026, 7, 6)
+    assert tasks_by_id["T-01"].actual_finish == date(2026, 7, 8)
+    # 未帶實績的任務 -> 空字串往返為 0/None (向下相容既有匯出格式)。
+    assert tasks_by_id["T-02"].percent_complete == 0
+    assert tasks_by_id["T-02"].actual_start is None
+    assert tasks_by_id["T-02"].actual_finish is None
+
+
+def test_parse_mspdi_reads_actuals():
+    """Task.PercentComplete / ActualStart / ActualFinish -> InteropTask 實績欄位。"""
+    xml_text = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Project xmlns="{MSPDI_NS}">
+  <Name>MSPDI-ACTUALS</Name>
+  <StartDate>2026-07-06T08:00:00</StartDate>
+  <Tasks>
+    <Task>
+      <UID>1</UID>
+      <Name>已完成工項</Name>
+      <OutlineLevel>1</OutlineLevel>
+      <OutlineNumber>1</OutlineNumber>
+      <Summary>0</Summary>
+      <Duration>PT40H0M0S</Duration>
+      <PercentComplete>100</PercentComplete>
+      <ActualStart>2026-07-06T08:00:00</ActualStart>
+      <ActualFinish>2026-07-10T17:00:00</ActualFinish>
+    </Task>
+  </Tasks>
+</Project>"""
+    interop = parse_mspdi(xml_text)
+    task = interop.tasks[0]
+    assert task.percent_complete == 100
+    assert task.actual_start == date(2026, 7, 6)
+    assert task.actual_finish == date(2026, 7, 10)
+    assert task.status == "COMPLETED"
+
+
+def test_generate_mspdi_emits_actuals_and_reparses_them():
+    """generate_mspdi 輸出 PercentComplete 恆有值；ActualStart/ActualFinish 僅
+    在有值時輸出。重新解析可讀回。"""
+    interop = InteropProject(
+        name="GEN-MSPDI-ACTUALS",
+        start_date=date(2026, 7, 6),
+        work_days="1111100",
+        tasks=[
+            InteropTask(
+                task_id="T-01", task_name="A", duration_days=2,
+                percent_complete=50,
+                actual_start=date(2026, 7, 6),
+            ),
+            InteropTask(task_id="T-02", task_name="B", duration_days=1),
+        ],
+    )
+    xml_text = generate_mspdi(interop)
+    assert "<PercentComplete>50</PercentComplete>" in xml_text
+    assert "<ActualStart>2026-07-06T08:00:00</ActualStart>" in xml_text
+    # T-02 沒有實績 -> PercentComplete 仍輸出 (0)，但無 ActualStart/ActualFinish 標籤重複。
+    assert xml_text.count("<ActualStart>") == 1
+
+    reparsed = parse_mspdi(xml_text)
+    tasks_by_id = {t.task_id: t for t in reparsed.tasks}
+    t1 = tasks_by_id["1"]
+    assert t1.percent_complete == 50
+    assert t1.actual_start == date(2026, 7, 6)
+    assert t1.actual_finish is None
+    t2 = tasks_by_id["2"]
+    assert t2.percent_complete == 0
+    assert t2.actual_start is None
+
+
+def _mspdi_percent_doc(percent_text: str) -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Project xmlns="{MSPDI_NS}">
+  <Name>MSPDI-PCT</Name>
+  <StartDate>2026-07-06T08:00:00</StartDate>
+  <Tasks>
+    <Task>
+      <UID>1</UID>
+      <Name>工項</Name>
+      <OutlineLevel>1</OutlineLevel>
+      <OutlineNumber>1</OutlineNumber>
+      <Summary>0</Summary>
+      <Duration>PT8H0M0S</Duration>
+      <PercentComplete>{percent_text}</PercentComplete>
+    </Task>
+  </Tasks>
+</Project>"""
+
+
+def test_parse_mspdi_non_finite_percent_warns_not_fail():
+    """PercentComplete 為 'inf'/'NaN'（float() 可解析但 round() 擲出
+    OverflowError/ValueError）-> 警告 + 預設 0 + 狀態 PENDING，不拋例外。"""
+    for bad in ("inf", "-Infinity", "NaN"):
+        interop = parse_mspdi(_mspdi_percent_doc(bad))  # 不得拋例外。
+        task = interop.tasks[0]
+        assert task.percent_complete == 0, bad
+        assert task.status == "PENDING", bad  # 不得因 inf>=100 誤標 COMPLETED。
+        assert len(interop.warnings) >= 1, bad
+
+
+def test_parse_mspdi_percent_clamps_out_of_range():
+    """PercentComplete 超出 0..100 -> 夾在範圍內（150 -> 100、-20 -> 0）。"""
+    over = parse_mspdi(_mspdi_percent_doc("150"))
+    assert over.tasks[0].percent_complete == 100
+    under = parse_mspdi(_mspdi_percent_doc("-20"))
+    assert under.tasks[0].percent_complete == 0
+    assert over.warnings == []
+    assert under.warnings == []
+
+
+def test_generate_mspdi_clamps_out_of_range_percent():
+    """generate_mspdi 對超界 InteropTask.percent_complete 輸出前夾在 0..100。"""
+    interop = InteropProject(
+        name="GEN-MSPDI-CLAMP",
+        start_date=date(2026, 7, 6),
+        work_days="1111100",
+        tasks=[
+            InteropTask(task_id="T-01", task_name="A", duration_days=1,
+                        percent_complete=150),
+            InteropTask(task_id="T-02", task_name="B", duration_days=1,
+                        percent_complete=-10),
+        ],
+    )
+    xml_text = generate_mspdi(interop)
+    assert "<PercentComplete>100</PercentComplete>" in xml_text
+    assert "<PercentComplete>0</PercentComplete>" in xml_text
+    assert "<PercentComplete>150</PercentComplete>" not in xml_text
+    assert "<PercentComplete>-10</PercentComplete>" not in xml_text
+
+
+def test_import_persists_actuals_to_task_progress_and_export_round_trips(client):
+    """匯入含實績的 XER -> report.actuals 計數 -> task_progress 正確 upsert ->
+    匯出再次讀出同樣的 phys_complete_pct/act_start_date/act_end_date (round-trip)。
+    """
+    headers = _editor_headers(client)
+    project_tbl = _xer_table(
+        "PROJECT", ["proj_id", "proj_short_name", "plan_start_date"],
+        [["1", "ACTUALS-ROUNDTRIP", "2026-07-06 00:00"]],
+    )
+    task_tbl = _xer_table(
+        "TASK",
+        [
+            "task_id", "proj_id", "task_code", "task_name", "status_code",
+            "target_drtn_hr_cnt", "phys_complete_pct", "act_start_date", "act_end_date",
+        ],
+        [
+            # 2026-07-06 (Mon,offset0) .. 2026-07-08 (Wed,offset2) 於 1111100 行事曆內。
+            ["1001", "1", "T-01", "實績工項", "TK_Active", "40",
+             "60", "2026-07-06 00:00", "2026-07-08 00:00"],
+            ["1002", "1", "T-02", "未回報工項", "TK_NotStart", "8", "", "", ""],
+        ],
+    )
+    text = _xer_doc(project_tbl, task_tbl)
+
+    resp = client.post(
+        IMPORT_URL,
+        headers=headers,
+        files={"file": ("actuals.xer", text.encode("utf-8"), "text/plain")},
+        data={"format": "xer"},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["report"]["actuals"] == 1  # 僅 T-01 帶有實績。
+
+    pid = body["project"]["project_id"]
+
+    progress_resp = client.get(f"{PROJECTS_URL}/{pid}/progress", headers=headers)
+    assert progress_resp.status_code == 200, progress_resp.text
+    progress_by_task = {p["task_id"]: p for p in progress_resp.json()}
+    t01_task_id = None
+    for t in body["project"]["tasks"]:
+        if t["task_name"] == "實績工項":
+            t01_task_id = t["task_id"]
+    assert t01_task_id is not None
+    assert t01_task_id in progress_by_task
+    assert progress_by_task[t01_task_id]["percent_complete"] == 60
+    assert progress_by_task[t01_task_id]["actual_start_day"] == 0
+    assert progress_by_task[t01_task_id]["actual_finish_day"] == 2
+    # 未回報實績的任務 -> 不建立 task_progress 列。
+    for t in body["project"]["tasks"]:
+        if t["task_name"] == "未回報工項":
+            assert t["task_id"] not in progress_by_task
+
+    # 匯出 -> 應讀出與匯入時相同的實績日期/百分比 (round-trip)。
+    export_resp = client.get(f"{PROJECTS_URL}/{pid}/export.xer", headers=headers)
+    assert export_resp.status_code == 200, export_resp.text
+    row = _xer_task_row(export_resp.text, "T-01")
+    assert row["phys_complete_pct"] == "60"
+    assert row["act_start_date"] == "2026-07-06"
+    assert row["act_end_date"] == "2026-07-08"
+
+
+def test_import_weekend_actual_dates_snap_to_next_workday_on_export(client):
+    """實績日期落在非工作日（週六/週日）的往返行為（明確鎖定契約語義）：
+
+    契約凍結 actual_*_day = workcal.date_to_offset(start_date, 實績日期,
+    DEFAULT_IMPORT_WORK_DAYS, set())，而 date_to_offset 對非工作日的語義是
+    「視同其後第一個工作日」（見 core/workcal.py docstring）—— 因此週六
+    2026-07-11 / 週日 2026-07-12 的實績在 1111100 行事曆下皆持久化為
+    offset 5，匯出時還原為下一個工作日（週一 2026-07-13）。本測試明確
+    斷言此「往下一個工作日吸附（snap）」行為，避免 offset 持久化/匯出
+    邏輯回歸時無測試可抓。"""
+    headers = _editor_headers(client)
+    project_tbl = _xer_table(
+        "PROJECT", ["proj_id", "proj_short_name", "plan_start_date"],
+        [["1", "WEEKEND-ACTUALS", "2026-07-06 00:00"]],
+    )
+    task_tbl = _xer_table(
+        "TASK",
+        [
+            "task_id", "proj_id", "task_code", "task_name", "status_code",
+            "target_drtn_hr_cnt", "phys_complete_pct", "act_start_date", "act_end_date",
+        ],
+        [
+            # act_start 週六 2026-07-11、act_end 週日 2026-07-12（皆非工作日）。
+            ["1001", "1", "T-01", "週末實績工項", "TK_Active", "40",
+             "40", "2026-07-11 00:00", "2026-07-12 00:00"],
+        ],
+    )
+    resp = client.post(
+        IMPORT_URL,
+        headers=headers,
+        files={"file": ("weekend.xer", _xer_doc(project_tbl, task_tbl).encode("utf-8"),
+                        "text/plain")},
+        data={"format": "xer"},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["report"]["actuals"] == 1
+    pid = body["project"]["project_id"]
+
+    # 週六/週日皆吸附至週一 2026-07-13 = offset 5（start 2026-07-06 週一）。
+    progress_resp = client.get(f"{PROJECTS_URL}/{pid}/progress", headers=headers)
+    assert progress_resp.status_code == 200, progress_resp.text
+    progress_by_task = {p["task_id"]: p for p in progress_resp.json()}
+    t01_task_id = body["project"]["tasks"][0]["task_id"]
+    assert progress_by_task[t01_task_id]["actual_start_day"] == 5
+    assert progress_by_task[t01_task_id]["actual_finish_day"] == 5
+
+    # 匯出：offset 5 -> 2026-07-13（週一）。非工作日實績「不」原樣往返，
+    # 而是吸附到下一個工作日 —— 這是 date_to_offset 契約語義的必然結果。
+    export_resp = client.get(f"{PROJECTS_URL}/{pid}/export.xer", headers=headers)
+    assert export_resp.status_code == 200, export_resp.text
+    row = _xer_task_row(export_resp.text, "T-01")
+    assert row["act_start_date"] == "2026-07-13"
+    assert row["act_end_date"] == "2026-07-13"
 
 
 def test_export_mspdi_then_reimport_preserves_tasks_links_constraints(client):

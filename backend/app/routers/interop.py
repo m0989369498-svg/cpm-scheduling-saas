@@ -41,13 +41,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import audit
+from app.core import audit, workcal
 from app.core.httputil import safe_filename
 from app.deps import TenantContext, get_db, require_role, verify_tenant
 from app.interop import InteropLink, InteropProject, InteropTask, InteropWbsNode
 from app.interop.mspdi import generate_mspdi, parse_mspdi
 from app.interop.xer import generate_xer, parse_xer
-from app.models.orm import Task, TaskDependency
+from app.models.orm import Task, TaskDependency, TaskProgress
+from app.routers.progress import _load_progress
 from app.routers.projects import (
     _dependency_maps,
     _get_project_or_404,
@@ -97,6 +98,9 @@ class ImportReport(BaseModel):
     wbs: int = 0
     links: int = 0
     constraints: int = 0
+    # Pro Batch E (FEATURE E3)：帶有實績 (percent_complete>0 或 actual_start /
+    # actual_finish) 的任務數，這些任務已 upsert 至 task_progress。
+    actuals: int = 0
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -255,6 +259,12 @@ async def _build_interop_project(
     holidays = await _load_holiday_dates(db, project_id)
     _pred_map, links_map = _dependency_maps(deps)
 
+    # Pro Batch E (FEATURE E3)：載入實績 (task_progress)，供匯出往返還原
+    # percent_complete / actual_start / actual_finish。
+    progress_rows = await _load_progress(db, project_id)
+    progress_by_task = {r.task_id: r for r in progress_rows}
+    work_days = project.work_days or "1111100"
+
     wbs_list = [
         InteropWbsNode(
             wbs_code=n.wbs_code,
@@ -268,6 +278,21 @@ async def _build_interop_project(
     interop_tasks: list[InteropTask] = []
     for t in tasks:
         links = links_map.get(t.task_id, [])
+        progress = progress_by_task.get(t.task_id)
+        percent_complete = 0
+        actual_start: date | None = None
+        actual_finish: date | None = None
+        if progress is not None:
+            percent_complete = int(progress.percent_complete or 0)
+            if project.start_date is not None:
+                if progress.actual_start_day is not None:
+                    actual_start = workcal.offset_to_date(
+                        project.start_date, progress.actual_start_day, work_days, holidays
+                    )
+                if progress.actual_finish_day is not None:
+                    actual_finish = workcal.offset_to_date(
+                        project.start_date, progress.actual_finish_day, work_days, holidays
+                    )
         interop_tasks.append(
             InteropTask(
                 task_id=t.task_id,
@@ -285,6 +310,9 @@ async def _build_interop_project(
                     )
                     for link in links
                 ],
+                percent_complete=percent_complete,
+                actual_start=actual_start,
+                actual_finish=actual_finish,
             )
         )
 
@@ -440,6 +468,45 @@ async def import_project(
     project = await _get_project_or_404(db, resolved_project_id, ctx.tenant_id)
     final_out = await recompute_project(db, project)
 
+    # (6) 實績 (actuals) upsert 至 task_progress (Pro Batch E FEATURE E3)。
+    # 僅針對「帶有實績」的任務 (percent_complete>0 或 actual_start/actual_finish
+    # 任一有值)；budget 保持 0 (匯入檔案不攜帶預算，需另以 PUT /progress 設定)。
+    actuals_count = 0
+    for it in interop.tasks:
+        has_actuals = bool(
+            (it.percent_complete or 0) > 0 or it.actual_start or it.actual_finish
+        )
+        if not has_actuals:
+            continue
+        actuals_count += 1
+        actual_start_day = (
+            workcal.date_to_offset(
+                start_date, it.actual_start, DEFAULT_IMPORT_WORK_DAYS, set()
+            )
+            if it.actual_start
+            else None
+        )
+        actual_finish_day = (
+            workcal.date_to_offset(
+                start_date, it.actual_finish, DEFAULT_IMPORT_WORK_DAYS, set()
+            )
+            if it.actual_finish
+            else None
+        )
+        db.add(
+            TaskProgress(
+                project_id=resolved_project_id,
+                tenant_id=ctx.tenant_id,
+                task_id=it.task_id,
+                budget=0.0,
+                percent_complete=max(0, min(100, int(it.percent_complete or 0))),
+                actual_cost=0.0,
+                actual_start_day=actual_start_day,
+                actual_finish_day=actual_finish_day,
+            )
+        )
+    await db.flush()
+
     # 稽核 (best-effort): 失敗僅記錄, 絕不中斷主要操作。
     try:
         await audit.log_action(
@@ -454,6 +521,7 @@ async def import_project(
                 "wbs": wbs_count,
                 "links": links_count,
                 "constraints": constraints_count,
+                "actuals": actuals_count,
                 "warnings": list(interop.warnings or []),
             },
         )
@@ -466,6 +534,7 @@ async def import_project(
         wbs=wbs_count,
         links=links_count,
         constraints=constraints_count,
+        actuals=actuals_count,
         warnings=list(interop.warnings or []),
     )
     return ImportResult(project=final_out, report=report)

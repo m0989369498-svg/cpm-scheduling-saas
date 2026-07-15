@@ -329,14 +329,16 @@ def test_resource_calendars_round_trip(client):
         f"{PROJECTS_URL}/{pid}/resources", headers=headers, json=payload
     )
     assert put_resp.status_code == 200, put_resp.text
+    # Pro Batch E (FEATURE E2)：calendars 項目新增 holidays 欄位 (向下相容，
+    # 未提供時預設為空清單)。
     assert put_resp.json()["calendars"] == [
-        {"resource_type": "crane", "work_days": "1111100"}
+        {"resource_type": "crane", "work_days": "1111100", "holidays": []}
     ]
 
     got = client.get(f"{PROJECTS_URL}/{pid}/resources", headers=headers)
     assert got.status_code == 200, got.text
     assert got.json()["calendars"] == [
-        {"resource_type": "crane", "work_days": "1111100"}
+        {"resource_type": "crane", "work_days": "1111100", "holidays": []}
     ]
     # ResourceLimit 的費率欄位 (unit_cost/category) 亦須完整往返 ——
     # 不可只靠 /cost 端點間接驗證 (該路由自行查 ProjectResourceLimit，

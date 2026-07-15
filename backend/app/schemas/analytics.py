@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from datetime import date as _date
+
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.schedule import TaskResult
@@ -49,6 +51,11 @@ class ResourceCalendar(BaseModel):
 
     resource_type: str
     work_days: str = "1111110"
+    # Pro Batch E (FEATURE E2)：該資源專屬的例外停工日 (ISO 'YYYY-MM-DD' 字串清單)，
+    # 補完 work_days 的「週型態」——供資源撫平計算逐日可用產能時，額外將這些
+    # 日期的該資源產能視為 0 (與 work_days 非工作日、專案 holidays 同等對待)。
+    # 空清單 = 向下相容 Batch D 行為 (無任何例外停工日)。
+    holidays: list[str] = Field(default_factory=list)
 
     @field_validator("work_days")
     @classmethod
@@ -58,6 +65,19 @@ class ResourceCalendar(BaseModel):
             raise ValueError(
                 "work_days 必須為 7 碼 0/1 字串（週一..週日 Mon..Sun）"
             )
+        return value
+
+    @field_validator("holidays")
+    @classmethod
+    def _validate_holidays(cls, value: list[str]) -> list[str]:
+        """holidays 內每個字串須可解析為 ISO 日期 ('YYYY-MM-DD')；否則 422。"""
+        for raw in value:
+            try:
+                _date.fromisoformat(str(raw))
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"holidays 內含無法解析的日期字串（invalid holiday date）：{raw!r}"
+                )
         return value
 
 

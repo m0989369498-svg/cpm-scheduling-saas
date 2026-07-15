@@ -768,6 +768,72 @@ CREATE POLICY tenant_isolation_task_photos ON public.task_photos
     WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
 
 -- =============================================================================
+-- 4.15 Pro Batch E (FEATURE E1/E2) — 企業級資源池 + 資源專屬例外停工日
+--      (public schema，RLS ENABLE+FORCE)
+-- -----------------------------------------------------------------------------
+-- FEATURE E1：租戶層級 (tenant-level) 資源池 tenant_resources —— 與
+--   project_resource_limits (單一專案上限) 不同，capacity 為「租戶整體」每日
+--   可用上限，供跨專案投資組合資源分配 (portfolio resource allocation) 使用。
+-- FEATURE E2：單一資源專屬例外停工日 resource_calendar_holidays —— 補完
+--   resource_calendars 的「週工作日型態」，另可設定該資源專屬的例外停工日
+--   (如吊車保養日)，語義同 project_holidays 但範圍限定於單一資源。
+-- 受 RLS 保護 (與 tasks / projects 一致)；本區塊置於 GRANT 區塊之前，
+-- 方能被「GRANT ON ALL TABLES IN SCHEMA public」一併涵蓋。
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS public.tenant_resources (
+    id            BIGSERIAL    PRIMARY KEY,
+    tenant_id     VARCHAR(50)  NOT NULL,
+    resource_type VARCHAR(50)  NOT NULL,
+    name          VARCHAR(120) NOT NULL DEFAULT '',
+    category      VARCHAR(20)  NOT NULL DEFAULT 'labor',
+    capacity      INT          NOT NULL DEFAULT 0,
+    unit_cost     DOUBLE PRECISION NOT NULL DEFAULT 0,
+    work_days     VARCHAR(7)   NOT NULL DEFAULT '1111100',
+    UNIQUE (tenant_id, resource_type)
+);
+
+CREATE TABLE IF NOT EXISTS public.resource_calendar_holidays (
+    id            BIGSERIAL    PRIMARY KEY,
+    project_id    VARCHAR(64)  NOT NULL REFERENCES public.projects(project_id) ON DELETE CASCADE,
+    tenant_id     VARCHAR(50)  NOT NULL,
+    resource_type VARCHAR(50)  NOT NULL,
+    holiday_date  DATE         NOT NULL,
+    name          VARCHAR(120) NOT NULL DEFAULT '',
+    UNIQUE (project_id, resource_type, holiday_date)
+);
+
+-- 常用查詢索引 -----------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_tenant_resources_tenant       ON public.tenant_resources(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_resource_cal_holidays_project ON public.resource_calendar_holidays(project_id);
+
+-- Row Level Security — 與 tasks / projects 相同的多租戶政策 --------------------
+ALTER TABLE public.tenant_resources ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tenant_resources FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_tenant_resources ON public.tenant_resources;
+CREATE POLICY tenant_isolation_tenant_resources ON public.tenant_resources
+    USING       (tenant_id = current_setting('app.current_tenant', true))
+    WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
+
+ALTER TABLE public.resource_calendar_holidays ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.resource_calendar_holidays FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_resource_cal_holidays ON public.resource_calendar_holidays;
+CREATE POLICY tenant_isolation_resource_cal_holidays ON public.resource_calendar_holidays
+    USING       (tenant_id = current_setting('app.current_tenant', true))
+    WITH CHECK  (tenant_id = current_setting('app.current_tenant', true));
+
+-- 種子資料 (示範租戶資源池) ------------------------------------------------------
+--   以 cpm (owner) 身分執行 => 繞過 RLS；冪等 (ON CONFLICT DO NOTHING)。
+INSERT INTO public.tenant_resources
+    (tenant_id, resource_type, name, category, capacity, unit_cost, work_days)
+VALUES
+    ('TENT-9981',   'crane',         '吊車',         'equipment', 2,  3200, '1111100'),
+    ('TENT-9981',   'manpower',      '人力',         'labor',     40, 260,  '1111110'),
+    ('TENT-9981',   'concrete_pump', '混凝土泵浦車', 'equipment', 1,  5000, '1111100'),
+    ('TENT-CN-002', 'crane',         '塔吊',         'equipment', 2,  2800, '1111100'),
+    ('TENT-CN-002', 'manpower',      '人力',         'labor',     30, 220,  '1111110')
+ON CONFLICT (tenant_id, resource_type) DO NOTHING;
+
+-- =============================================================================
 -- 5. 應用程式連線角色 cpm_app (NON-SUPERUSER) — RLS 真正生效的關鍵
 -- -----------------------------------------------------------------------------
 -- 安全性重點 (root cause)：

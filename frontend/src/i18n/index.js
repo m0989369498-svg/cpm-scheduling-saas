@@ -181,6 +181,7 @@ export const I18N = {
     importedWbs: '匯入 WBS 節點數',
     importedLinks: '匯入依賴數',
     importedConstraints: '匯入限制條件數',
+    importedActuals: '匯入實際進度數',
     dismiss: '關閉',
     // ---- Pro Batch C：行動裝置現場回報（任務照片 + QR 深連結 + 離線佇列）----
     fieldMode: '現場模式',
@@ -244,6 +245,20 @@ export const I18N = {
     dcma_critical_path_test: '要徑連續性',
     dcma_cpli: '要徑長度指數',
     dcma_bei: '基準執行指數',
+    // ---- Pro Batch E · Feature 1：企業（租戶層級）資源池 + 投資組合超載分配 ----
+    enterpriseResources: '企業資源',
+    resourcePool: '資源池',
+    capacity: '產能',
+    resourceName: '資源名稱',
+    resourceAllocation: '資源分配',
+    overAllocated: '超額分配',
+    peakDemand: '尖峰需求',
+    week: '週',
+    unscheduledProjects: '未排定專案',
+    addResource: '新增資源',
+    // ---- Pro Batch E · Feature 2：每資源行事曆假日例外 ----
+    resourceHolidays: '資源假日',
+    addHoliday: '新增假日',
     statuses: {
       PENDING: '待辦',
       IN_PROGRESS: '進行中',
@@ -430,6 +445,7 @@ export const I18N = {
     importedWbs: '导入 WBS 节点数',
     importedLinks: '导入依赖数',
     importedConstraints: '导入约束条件数',
+    importedActuals: '导入实际进度数',
     dismiss: '关闭',
     // ---- Pro Batch C：移动设备现场报告（任务照片 + QR 深链接 + 离线队列）----
     fieldMode: '现场模式',
@@ -493,6 +509,20 @@ export const I18N = {
     dcma_critical_path_test: '关键路径连续性',
     dcma_cpli: '关键路径长度指数',
     dcma_bei: '基线执行指数',
+    // ---- Pro Batch E · Feature 1：企业（租户层级）资源池 + 投资组合超载分配 ----
+    enterpriseResources: '企业资源',
+    resourcePool: '资源池',
+    capacity: '产能',
+    resourceName: '资源名称',
+    resourceAllocation: '资源分配',
+    overAllocated: '超额分配',
+    peakDemand: '峰值需求',
+    week: '周',
+    unscheduledProjects: '未排期项目',
+    addResource: '新增资源',
+    // ---- Pro Batch E · Feature 2：每资源日历假日例外 ----
+    resourceHolidays: '资源假日',
+    addHoliday: '新增假日',
     statuses: {
       PENDING: '待办',
       IN_PROGRESS: '进行中',

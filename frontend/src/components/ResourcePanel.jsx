@@ -9,6 +9,7 @@ import { t } from '../i18n';
  *   - 編輯每種資源上限 (resource limit)：crane（吊車）/ manpower（人力）+ 任何既有資源型別
  *   - Pro Batch D Feature 1：每資源單位成本 (unit_cost) + 類別 (category：labor/equipment/material/subcontract)
  *   - Pro Batch D Feature 3：每資源行事曆（7 個工作日核取方塊，週一~週日；與專案行事曆並行套用於撫平）
+ *   - Pro Batch E Feature 2：每資源行事曆假日例外（ISO 日期新增/移除清單；該資源在該日產能為 0）
  *   - 編輯每個任務的資源需求 (resource demand)
  *   - 「儲存資源設定」-> store.saveResources(cfg)
  *   - 「執行資源撫平」-> store.runLeveling()
@@ -16,7 +17,8 @@ import { t } from '../i18n';
  *
  * 資料來源：store.resources（ResourceConfig）、store.leveling（LevelingResult）
  *   ResourceConfig { limits:[{resource_type, max_capacity, unit_cost, category}],
- *                     demands:{ [taskId]: {res: qty} }, calendars:[{resource_type, work_days}] }
+ *                     demands:{ [taskId]: {res: qty} },
+ *                     calendars:[{resource_type, work_days, holidays:['YYYY-MM-DD', ...]}] }
  *   LevelingResult { original_duration, leveled_duration, extended, tasks, timeline, over_capacity_days, unresolved }
  *     timeline: [{ day:int, loads:{res:int}, over:bool }]
  */
@@ -57,8 +59,11 @@ export default function ResourcePanel({ region = 'TW' }) {
   const [demandDrafts, setDemandDrafts] = useState({});
   // Pro Batch D Feature 1：每資源成本草稿 {res: {unit_cost, category}}
   const [costDrafts, setCostDrafts] = useState({});
-  // Pro Batch D Feature 3：每資源行事曆草稿 {res: work_days(7碼 0/1 字串)}
+  // Pro Batch D Feature 3 + Pro Batch E Feature 2：每資源行事曆草稿
+  // {res: {work_days:(7碼 0/1 字串), holidays:['YYYY-MM-DD', ...]}}
   const [calendarDrafts, setCalendarDrafts] = useState({});
+  // 假日新增輸入框草稿 {res: 'YYYY-MM-DD'}
+  const [holidayInputDrafts, setHolidayInputDrafts] = useState({});
 
   const projectId = currentProject?.project_id;
   const tasks = currentProject?.tasks || [];
@@ -92,11 +97,16 @@ export default function ResourcePanel({ region = 'TW' }) {
         demands[tid] = { ...(d || {}) };
       });
     }
-    // Pro Batch D Feature 3：每資源行事曆
+    // Pro Batch D Feature 3 + Pro Batch E Feature 2：每資源行事曆（工作日 + 假日例外）
     const calendars = {};
     if (resources && Array.isArray(resources.calendars)) {
       resources.calendars.forEach((c) => {
-        if (c && c.resource_type != null) calendars[c.resource_type] = c.work_days || DEFAULT_WORK_DAYS;
+        if (c && c.resource_type != null) {
+          calendars[c.resource_type] = {
+            work_days: c.work_days || DEFAULT_WORK_DAYS,
+            holidays: Array.isArray(c.holidays) ? c.holidays.slice().sort() : [],
+          };
+        }
       });
     }
     setLimitDrafts(limits);
@@ -148,15 +158,43 @@ export default function ResourcePanel({ region = 'TW' }) {
   // Pro Batch D Feature 3：切換某資源第 dayIdx 天（0=週一...6=週日）的工作日旗標
   const handleCalendarToggle = (res, dayIdx) => {
     setCalendarDrafts((prev) => {
-      const current = prev[res] || DEFAULT_WORK_DAYS;
-      const chars = current.split('');
+      const current = prev[res] || { work_days: DEFAULT_WORK_DAYS, holidays: [] };
+      const chars = (current.work_days || DEFAULT_WORK_DAYS).split('');
       chars[dayIdx] = chars[dayIdx] === '1' ? '0' : '1';
-      return { ...prev, [res]: chars.join('') };
+      return { ...prev, [res]: { ...current, work_days: chars.join('') } };
+    });
+  };
+
+  // Pro Batch E Feature 2：假日新增輸入框草稿變更
+  const handleHolidayInputChange = (res, value) => {
+    setHolidayInputDrafts((prev) => ({ ...prev, [res]: value }));
+  };
+
+  // 新增一筆假日例外（ISO 日期字串，去重 + 排序）；成功後清空該資源的輸入框
+  const handleHolidayAdd = (res) => {
+    const date = (holidayInputDrafts[res] || '').trim();
+    if (!date) return;
+    setCalendarDrafts((prev) => {
+      const current = prev[res] || { work_days: DEFAULT_WORK_DAYS, holidays: [] };
+      const holidays = Array.isArray(current.holidays) ? current.holidays : [];
+      if (holidays.includes(date)) return prev;
+      return { ...prev, [res]: { ...current, holidays: [...holidays, date].sort() } };
+    });
+    setHolidayInputDrafts((prev) => ({ ...prev, [res]: '' }));
+  };
+
+  // 移除一筆假日例外
+  const handleHolidayRemove = (res, date) => {
+    setCalendarDrafts((prev) => {
+      const current = prev[res] || { work_days: DEFAULT_WORK_DAYS, holidays: [] };
+      const holidays = Array.isArray(current.holidays) ? current.holidays : [];
+      return { ...prev, [res]: { ...current, holidays: holidays.filter((d) => d !== date) } };
     });
   };
 
   // 組裝 ResourceConfig 並儲存（限量轉整數；需求為 0/空者略過；
-  // Pro Batch D：limits 併入 unit_cost/category，calendars 依已載入/已編輯的資源送出）
+  // Pro Batch D：limits 併入 unit_cost/category，calendars 依已載入/已編輯的資源送出；
+  // Pro Batch E：calendars 併入該資源的假日例外清單）
   const buildConfig = () => {
     const limits = Object.entries(limitDrafts)
       .filter(([, v]) => v !== '' && v != null)
@@ -180,8 +218,12 @@ export default function ResourcePanel({ region = 'TW' }) {
       if (Object.keys(entry).length > 0) demands[tid] = entry;
     });
     const calendars = Object.entries(calendarDrafts)
-      .filter(([, wd]) => typeof wd === 'string' && /^[01]{7}$/.test(wd))
-      .map(([resource_type, work_days]) => ({ resource_type, work_days }));
+      .filter(([, c]) => c && typeof c.work_days === 'string' && /^[01]{7}$/.test(c.work_days))
+      .map(([resource_type, c]) => ({
+        resource_type,
+        work_days: c.work_days,
+        holidays: Array.isArray(c.holidays) ? c.holidays.slice() : [],
+      }));
     return { limits, demands, calendars };
   };
 
@@ -284,7 +326,8 @@ export default function ResourcePanel({ region = 'TW' }) {
         </div>
       </div>
 
-      {/* ===== Pro Batch D Feature 3：每資源行事曆（週一~週日核取方塊） ===== */}
+      {/* ===== Pro Batch D Feature 3：每資源行事曆（週一~週日核取方塊）
+             + Pro Batch E Feature 2：每資源假日例外（新增/移除 ISO 日期清單） ===== */}
       <div style={{ marginBottom: '16px' }}>
         <div style={{ fontWeight: 700, fontSize: '13px', marginBottom: '6px', color: '#2c3e50' }}>
           {t(region, 'resourceCalendar')}
@@ -298,11 +341,14 @@ export default function ResourcePanel({ region = 'TW' }) {
                   {w}
                 </th>
               ))}
+              <th style={cellHead}>{t(region, 'resourceHolidays')}</th>
             </tr>
           </thead>
           <tbody>
             {resourceTypes.map((res) => {
-              const wd = calendarDrafts[res] || DEFAULT_WORK_DAYS;
+              const cal = calendarDrafts[res] || { work_days: DEFAULT_WORK_DAYS, holidays: [] };
+              const wd = cal.work_days || DEFAULT_WORK_DAYS;
+              const resHolidays = Array.isArray(cal.holidays) ? cal.holidays : [];
               return (
                 <tr key={`cal-${res}`} style={{ borderBottom: '1px solid #eee' }}>
                   <td style={{ ...cell, fontWeight: 700 }}>{resourceLabel(res)}</td>
@@ -315,6 +361,55 @@ export default function ResourcePanel({ region = 'TW' }) {
                       />
                     </td>
                   ))}
+                  <td style={cell}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
+                      {resHolidays.map((d) => (
+                        <span
+                          key={`${res}-hol-${d}`}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            background: '#fdecea',
+                            border: '1px solid #f5c6cb',
+                            color: '#c0392b',
+                            borderRadius: '4px',
+                            padding: '1px 6px',
+                            fontSize: '11px',
+                          }}
+                        >
+                          {d}
+                          <button
+                            type="button"
+                            onClick={() => handleHolidayRemove(res, d)}
+                            title={t(region, 'removeRow')}
+                            style={{
+                              border: 'none',
+                              background: 'transparent',
+                              color: '#c0392b',
+                              cursor: 'pointer',
+                              fontWeight: 700,
+                              padding: 0,
+                              lineHeight: 1,
+                            }}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      <input
+                        type="date"
+                        style={{ width: '130px' }}
+                        value={holidayInputDrafts[res] || ''}
+                        onChange={(e) => handleHolidayInputChange(res, e.target.value)}
+                      />
+                      <button type="button" className="secondary small" onClick={() => handleHolidayAdd(res)}>
+                        + {t(region, 'addHoliday')}
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               );
             })}

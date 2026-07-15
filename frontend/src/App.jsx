@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import ScheduleBoard from './components/ScheduleBoard.jsx'
 import DashboardView from './components/DashboardView.jsx'
 import UserAdminPanel from './components/UserAdminPanel.jsx'
+import EnterpriseResourcePanel from './components/EnterpriseResourcePanel.jsx'
 import Login from './components/Login.jsx'
 import FieldMode from './components/FieldMode.jsx'
 import { useScheduleStore } from './store/scheduleStore'
@@ -31,6 +32,7 @@ const VIEW_ERROR_SCOPES = {
   board: ['project', 'projects'],
   dashboard: ['dashboard'],
   users: ['users', 'trash'],
+  enterprise: ['pool', 'allocation'],
 }
 
 // 根元件：
@@ -65,6 +67,7 @@ export default function App() {
   const navItems = [
     { key: 'board', label: t(region, 'board') },
     { key: 'dashboard', label: t(region, 'dashboard') },
+    { key: 'enterprise', label: t(region, 'enterpriseResources') },
   ]
   if (role === 'admin') {
     navItems.push({ key: 'users', label: t(region, 'users') })
@@ -118,6 +121,11 @@ export default function App() {
         {view === 'dashboard' && (
           <div className="board">
             <DashboardView region={region} onOpenProject={() => setView('board')} />
+          </div>
+        )}
+        {view === 'enterprise' && (
+          <div className="board">
+            <EnterpriseResourcePanel region={region} />
           </div>
         )}
         {view === 'users' && role === 'admin' && (
