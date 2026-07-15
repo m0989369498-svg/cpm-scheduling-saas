@@ -330,7 +330,11 @@ def test_allocation_returns_weeks_rows_and_peak(client):
     assert "2026-W28" in body["weeks"]
     crane_row = next(r for r in body["resources"] if r["resource_type"] == "crane")
     assert crane_row["capacity"] == 1
-    assert crane_row["peak"] == 2  # 兩天內每天需求 2
+    # 斷言「本專案所屬週」的峰值 (W28)，而非全域 peak —— 配置剖析會彙總本租戶
+    # 所有已排程專案 (含種子專案的吊車需求)，故 peak 可能高於本專案的 2；本專案
+    # 於 W28 的每日需求 2 才是此測試的意圖，對種子資料變動更穩健 (seed-robust)。
+    assert crane_row["by_week"]["2026-W28"] == 2  # 兩天內每天需求 2
+    assert crane_row["peak"] >= 2  # 全域峰值至少涵蓋本專案的 2
     assert "2026-W28" in crane_row["over_weeks"]  # 2 > capacity(1)
 
 

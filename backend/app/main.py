@@ -78,6 +78,8 @@ async def _seed_core_data() -> None:
     內容：兩個租戶 (TENT-9981/TW、TENT-CN-002/CN)、兩個專案及其任務/相依、
     ERP 設定列。皆「不存在才插入」(以主鍵 / 唯一鍵查詢) 故可重入。
     """
+    from datetime import date
+
     from sqlalchemy import select
 
     from app import database
@@ -121,6 +123,7 @@ async def _seed_core_data() -> None:
             "tenant_id": "TENT-9981",
             "project_name": "2026 示範建案工程排程",
             "region": "TW",
+            "start_date": date(2026, 3, 2),
             "tasks": [
                 ("T-01", "基地開挖", 5, "COMPLETED", 0, 5, 0, 5, 0, True,
                     {"crane": 1, "manpower": 10}),
@@ -163,6 +166,7 @@ async def _seed_core_data() -> None:
             "tenant_id": "TENT-CN-002",
             "project_name": "2026 示范建筑工程排程",
             "region": "CN",
+            "start_date": date(2026, 3, 2),
             "tasks": [
                 ("C-01", "土方开挖", 4, "COMPLETED", 0, 4, 0, 4, 0, True,
                     {"crane": 1, "manpower": 12}),
@@ -200,6 +204,7 @@ async def _seed_core_data() -> None:
             "tenant_id": "TENT-9981",
             "project_name": "雙塔平行工程示範 (資源衝突)",
             "region": "TW",
+            "start_date": date(2026, 3, 2),
             "tasks": [
                 ("PA0", "場地整備", 2, "COMPLETED", 0, 2, 0, 2, 0, True,
                     {"crane": 0, "manpower": 5}),
@@ -278,8 +283,13 @@ async def _seed_core_data() -> None:
                             tenant_id=p["tenant_id"],
                             project_name=p["project_name"],
                             region=p["region"],
+                            start_date=p.get("start_date"),
                         )
                     )
+                elif exists.start_date is None and p.get("start_date") is not None:
+                    # 冪等回填：既有 demo 專案 (前一版種子無 start_date) 補上開工日，
+                    # 讓企業資源配置剖析 / 資源行事曆一開箱即可展示 (不覆寫既有值)。
+                    exists.start_date = p["start_date"]
                 for (
                     task_id,
                     task_name,

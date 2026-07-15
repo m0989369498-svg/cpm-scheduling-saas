@@ -202,8 +202,8 @@ VALUES ('TENT-9981', '示範營造工程顧問', 'TW')
 ON CONFLICT (tenant_id) DO NOTHING;
 
 -- 4.2 專案 -----------------------------------------------------------------------
-INSERT INTO public.projects (project_id, tenant_id, project_name, region)
-VALUES ('PRJ-2026-TW-001', 'TENT-9981', '2026 示範建案工程排程', 'TW')
+INSERT INTO public.projects (project_id, tenant_id, project_name, region, start_date)
+VALUES ('PRJ-2026-TW-001', 'TENT-9981', '2026 示範建案工程排程', 'TW', '2026-03-02')
 ON CONFLICT (project_id) DO NOTHING;
 
 -- 4.3 任務 (含初始 CPM 計算結果) ------------------------------------------------
@@ -246,8 +246,8 @@ INSERT INTO public.tenants (tenant_id, name, region)
 VALUES ('TENT-CN-002', '示范建筑工程公司', 'CN')
 ON CONFLICT (tenant_id) DO NOTHING;
 
-INSERT INTO public.projects (project_id, tenant_id, project_name, region)
-VALUES ('PRJ-2026-CN-001', 'TENT-CN-002', '2026 示范建筑工程排程', 'CN')
+INSERT INTO public.projects (project_id, tenant_id, project_name, region, start_date)
+VALUES ('PRJ-2026-CN-001', 'TENT-CN-002', '2026 示范建筑工程排程', 'CN', '2026-03-02')
 ON CONFLICT (project_id) DO NOTHING;
 
 INSERT INTO public.tasks
@@ -284,8 +284,8 @@ ON CONFLICT (tenant_id) DO NOTHING;
 --        PB2: es6  ef8  ls9  lf11 float3            (B棟結構)
 --        PF : es11 ef12 ls11 lf12 float0  critical   (竣工驗收)
 -- -----------------------------------------------------------------------------
-INSERT INTO public.projects (project_id, tenant_id, project_name, region)
-VALUES ('PRJ-2026-TW-PARALLEL', 'TENT-9981', '雙塔平行工程示範 (資源衝突)', 'TW')
+INSERT INTO public.projects (project_id, tenant_id, project_name, region, start_date)
+VALUES ('PRJ-2026-TW-PARALLEL', 'TENT-9981', '雙塔平行工程示範 (資源衝突)', 'TW', '2026-03-02')
 ON CONFLICT (project_id) DO NOTHING;
 
 INSERT INTO public.tasks
