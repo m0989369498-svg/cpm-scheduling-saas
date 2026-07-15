@@ -1,0 +1,36 @@
+{
+ "projects": [
+  {
+   "project_id": "PRJ-2026-TW-001",
+   "project_name": "2026 示範建案工程排程",
+   "region": "TW",
+   "task_count": 3,
+   "project_duration": 10,
+   "critical_count": 3,
+   "has_baseline": true,
+   "spi": 0.62,
+   "cpi": 0.8266666666666667,
+   "pending_risk_events": 0
+  },
+  {
+   "project_id": "PRJ-2026-TW-PARALLEL",
+   "project_name": "雙塔平行工程示範 (資源衝突)",
+   "region": "TW",
+   "task_count": 6,
+   "project_duration": 12,
+   "critical_count": 4,
+   "has_baseline": true,
+   "spi": 0.5073529411764706,
+   "cpi": 1.002906976744186,
+   "pending_risk_events": 0
+  }
+ ],
+ "totals": {
+  "project_count": 2,
+  "task_count": 9,
+  "critical_count": 7,
+  "baseline_count": 2,
+  "pending_risk_events": 0,
+  "at_risk_count": 2
+ }
+}

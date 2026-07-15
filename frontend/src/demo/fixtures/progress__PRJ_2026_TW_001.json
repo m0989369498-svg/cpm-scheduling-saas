@@ -1,0 +1,26 @@
+[
+ {
+  "task_id": "T-01",
+  "budget": 50000.0,
+  "percent_complete": 100,
+  "actual_cost": 55000.0,
+  "actual_start_day": 0,
+  "actual_finish_day": 6
+ },
+ {
+  "task_id": "T-02",
+  "budget": 30000.0,
+  "percent_complete": 40,
+  "actual_cost": 20000.0,
+  "actual_start_day": 6,
+  "actual_finish_day": null
+ },
+ {
+  "task_id": "T-03",
+  "budget": 20000.0,
+  "percent_complete": 0,
+  "actual_cost": 0.0,
+  "actual_start_day": null,
+  "actual_finish_day": null
+ }
+]

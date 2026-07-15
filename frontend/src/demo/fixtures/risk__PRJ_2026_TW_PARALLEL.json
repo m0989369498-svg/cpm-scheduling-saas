@@ -1,0 +1,44 @@
+[
+ {
+  "task_id": "PA0",
+  "optimistic_duration": 1,
+  "most_likely_duration": 2,
+  "pessimistic_duration": 4,
+  "criticality_index": 1.0
+ },
+ {
+  "task_id": "PA1",
+  "optimistic_duration": 3,
+  "most_likely_duration": 4,
+  "pessimistic_duration": 8,
+  "criticality_index": 0.991
+ },
+ {
+  "task_id": "PA2",
+  "optimistic_duration": 4,
+  "most_likely_duration": 5,
+  "pessimistic_duration": 10,
+  "criticality_index": 0.991
+ },
+ {
+  "task_id": "PB1",
+  "optimistic_duration": 2,
+  "most_likely_duration": 4,
+  "pessimistic_duration": 7,
+  "criticality_index": 0.036
+ },
+ {
+  "task_id": "PB2",
+  "optimistic_duration": 1,
+  "most_likely_duration": 2,
+  "pessimistic_duration": 5,
+  "criticality_index": 0.036
+ },
+ {
+  "task_id": "PF",
+  "optimistic_duration": 1,
+  "most_likely_duration": 1,
+  "pessimistic_duration": 2,
+  "criticality_index": 1.0
+ }
+]

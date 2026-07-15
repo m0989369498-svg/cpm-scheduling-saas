@@ -1,0 +1,103 @@
+{
+ "total_cost": 72750.0,
+ "by_resource": {
+  "crane": 45000.0,
+  "manpower": 27750.0
+ },
+ "by_category": {
+  "equipment": 45000.0,
+  "labor": 27750.0
+ },
+ "by_wbs": {
+  "": 72750.0
+ },
+ "per_task": [
+  {
+   "task_id": "T-01",
+   "task_name": "基地開挖",
+   "duration": 5,
+   "cost": 27500.0,
+   "per_resource": {
+    "crane": 15000.0,
+    "manpower": 12500.0
+   }
+  },
+  {
+   "task_id": "T-02",
+   "task_name": "一樓鋼筋綁紮",
+   "duration": 3,
+   "cost": 29250.0,
+   "per_resource": {
+    "crane": 18000.0,
+    "manpower": 11250.0
+   }
+  },
+  {
+   "task_id": "T-03",
+   "task_name": "一樓混凝土澆置",
+   "duration": 2,
+   "cost": 16000.0,
+   "per_resource": {
+    "crane": 12000.0,
+    "manpower": 4000.0
+   }
+  }
+ ],
+ "cost_curve": [
+  {
+   "day": 0,
+   "cost": 5500.0,
+   "cumulative": 5500.0
+  },
+  {
+   "day": 1,
+   "cost": 5500.0,
+   "cumulative": 11000.0
+  },
+  {
+   "day": 2,
+   "cost": 5500.0,
+   "cumulative": 16500.0
+  },
+  {
+   "day": 3,
+   "cost": 5500.0,
+   "cumulative": 22000.0
+  },
+  {
+   "day": 4,
+   "cost": 5500.0,
+   "cumulative": 27500.0
+  },
+  {
+   "day": 5,
+   "cost": 9750.0,
+   "cumulative": 37250.0
+  },
+  {
+   "day": 6,
+   "cost": 9750.0,
+   "cumulative": 47000.0
+  },
+  {
+   "day": 7,
+   "cost": 9750.0,
+   "cumulative": 56750.0
+  },
+  {
+   "day": 8,
+   "cost": 8000.0,
+   "cumulative": 64750.0
+  },
+  {
+   "day": 9,
+   "cost": 8000.0,
+   "cumulative": 72750.0
+  },
+  {
+   "day": 10,
+   "cost": 0.0,
+   "cumulative": 72750.0
+  }
+ ]
+}

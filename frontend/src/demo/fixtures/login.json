@@ -1,0 +1,7 @@
+{
+ "access_token": "demo-standalone-token",
+ "token_type": "bearer",
+ "tenant_id": "TENT-9981",
+ "region": "TW",
+ "role": "admin"
+}

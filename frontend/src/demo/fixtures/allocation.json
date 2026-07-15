@@ -1,0 +1,49 @@
+{
+ "weeks": [
+  "2026-W10",
+  "2026-W11"
+ ],
+ "resources": [
+  {
+   "resource_type": "concrete_pump",
+   "name": "混凝土泵浦車",
+   "category": "equipment",
+   "capacity": 1,
+   "unit_cost": 5000.0,
+   "by_week": {},
+   "peak": 0,
+   "over_weeks": []
+  },
+  {
+   "resource_type": "crane",
+   "name": "吊車",
+   "category": "equipment",
+   "capacity": 2,
+   "unit_cost": 3200.0,
+   "by_week": {
+    "2026-W10": 4,
+    "2026-W11": 4
+   },
+   "peak": 4,
+   "over_weeks": [
+    "2026-W10",
+    "2026-W11"
+   ]
+  },
+  {
+   "resource_type": "manpower",
+   "name": "人力",
+   "category": "labor",
+   "capacity": 40,
+   "unit_cost": 260.0,
+   "by_week": {
+    "2026-W10": 35,
+    "2026-W11": 35
+   },
+   "peak": 35,
+   "over_weeks": []
+  }
+ ],
+ "unscheduled_projects": [],
+ "warnings": []
+}

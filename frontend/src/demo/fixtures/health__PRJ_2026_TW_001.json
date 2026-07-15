@@ -1,0 +1,187 @@
+{
+ "data_date": 10,
+ "checks": [
+  {
+   "key": "logic",
+   "name": "Logic",
+   "name_cn": "邏輯遺漏",
+   "value": 0.0,
+   "threshold": 0.05,
+   "comparison": "lte",
+   "count": 0,
+   "total": 3,
+   "passed": true,
+   "detail": [
+    "T-01",
+    "T-03"
+   ]
+  },
+  {
+   "key": "leads",
+   "name": "Leads",
+   "name_cn": "提前 (負延時)",
+   "value": 0.0,
+   "threshold": 0.0,
+   "comparison": "eq",
+   "count": 0,
+   "total": 2,
+   "passed": true,
+   "detail": []
+  },
+  {
+   "key": "lags",
+   "name": "Lags",
+   "name_cn": "延時",
+   "value": 0.0,
+   "threshold": 0.05,
+   "comparison": "lte",
+   "count": 0,
+   "total": 2,
+   "passed": true,
+   "detail": []
+  },
+  {
+   "key": "relationship_types",
+   "name": "Relationship Types",
+   "name_cn": "關係型態 (FS%)",
+   "value": 1.0,
+   "threshold": 0.9,
+   "comparison": "gte",
+   "count": 2,
+   "total": 2,
+   "passed": true,
+   "detail": []
+  },
+  {
+   "key": "hard_constraints",
+   "name": "Hard Constraints",
+   "name_cn": "硬性限制",
+   "value": 0.0,
+   "threshold": 0.05,
+   "comparison": "lte",
+   "count": 0,
+   "total": 3,
+   "passed": true,
+   "detail": []
+  },
+  {
+   "key": "high_float",
+   "name": "High Float",
+   "name_cn": "高寬裕 (>44d)",
+   "value": 0.0,
+   "threshold": 0.05,
+   "comparison": "lte",
+   "count": 0,
+   "total": 2,
+   "passed": true,
+   "detail": []
+  },
+  {
+   "key": "negative_float",
+   "name": "Negative Float",
+   "name_cn": "負寬裕",
+   "value": 0.0,
+   "threshold": 0.0,
+   "comparison": "eq",
+   "count": 0,
+   "total": 3,
+   "passed": true,
+   "detail": []
+  },
+  {
+   "key": "high_duration",
+   "name": "High Duration",
+   "name_cn": "高工期 (>44d)",
+   "value": 0.0,
+   "threshold": 0.05,
+   "comparison": "lte",
+   "count": 0,
+   "total": 2,
+   "passed": true,
+   "detail": []
+  },
+  {
+   "key": "invalid_dates",
+   "name": "Invalid Dates",
+   "name_cn": "無效日期",
+   "value": 0.0,
+   "threshold": 0.0,
+   "comparison": "eq",
+   "count": 0,
+   "total": 3,
+   "passed": true,
+   "detail": []
+  },
+  {
+   "key": "resources",
+   "name": "Resources",
+   "name_cn": "資源指派缺漏",
+   "value": 0.0,
+   "threshold": 0.05,
+   "comparison": "lte",
+   "count": 0,
+   "total": 3,
+   "passed": true,
+   "detail": []
+  },
+  {
+   "key": "missed_tasks",
+   "name": "Missed Tasks",
+   "name_cn": "逾期未完成",
+   "value": 0.6666666666666666,
+   "threshold": 0.05,
+   "comparison": "lte",
+   "count": 2,
+   "total": 3,
+   "passed": false,
+   "detail": [
+    "T-02",
+    "T-03"
+   ]
+  },
+  {
+   "key": "critical_path_test",
+   "name": "Critical Path Test",
+   "name_cn": "要徑連續性",
+   "value": 1.0,
+   "threshold": 1.0,
+   "comparison": "eq",
+   "count": 1,
+   "total": 1,
+   "passed": true,
+   "detail": []
+  },
+  {
+   "key": "cpli",
+   "name": "CPLI",
+   "name_cn": "要徑長度指數",
+   "value": 1.0,
+   "threshold": 0.95,
+   "comparison": "gte",
+   "count": 0,
+   "total": 10,
+   "passed": true,
+   "detail": [
+    "T-03"
+   ]
+  },
+  {
+   "key": "bei",
+   "name": "BEI",
+   "name_cn": "基準執行指數",
+   "value": 0.3333333333333333,
+   "threshold": 0.95,
+   "comparison": "gte",
+   "count": 1,
+   "total": 3,
+   "passed": false,
+   "detail": [
+    "T-01"
+   ]
+  }
+ ],
+ "score": 0.8571428571428571,
+ "passed_count": 12,
+ "applicable_count": 14,
+ "total_count": 14
+}

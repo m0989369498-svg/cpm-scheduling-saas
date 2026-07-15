@@ -1,0 +1,26 @@
+ERMHDR	1	2026-07-15	Project	cpm-saas	cpm-saas	cpm-saas	CPM SaaS	Project Management	TW
+%T	PROJECT
+%F	proj_id	proj_short_name	plan_start_date	clndr_id
+%R	1	雙塔平行工程示範 (資源衝突)	2026-03-02	1
+%T	CALENDAR
+%F	clndr_id	clndr_name	clndr_type	day_hr_cnt
+%R	1	Standard	CA_Base	8
+%T	PROJWBS
+%F	wbs_id	proj_id	parent_wbs_id	wbs_short_name	wbs_name	proj_node_flag
+%R	1	1		雙塔平行工程示範 (資源衝突)	雙塔平行工程示範 (資源衝突)	Y
+%T	TASK
+%F	task_id	proj_id	wbs_id	clndr_id	task_code	task_name	task_type	duration_type	complete_pct_type	target_drtn_hr_cnt	status_code	cstr_type	cstr_date	phys_complete_pct	act_start_date	act_end_date
+%R	1	1		1	PA0	場地整備	TT_Task	DT_FixedDrtn	CP_Drtn	16	TK_Complete			100	2026-03-02	2026-03-04
+%R	2	1		1	PA1	A棟基礎	TT_Task	DT_FixedDrtn	CP_Drtn	32	TK_Active			100	2026-03-04	2026-03-09
+%R	3	1		1	PA2	A棟結構	TT_Task	DT_FixedDrtn	CP_Drtn	40	TK_NotStart			20	2026-03-09	
+%R	4	1		1	PB1	B棟基礎	TT_Task	DT_FixedDrtn	CP_Drtn	32	TK_NotStart			75	2026-03-04	
+%R	5	1		1	PB2	B棟結構	TT_Task	DT_FixedDrtn	CP_Drtn	16	TK_NotStart			0		
+%R	6	1		1	PF	竣工驗收	TT_Task	DT_FixedDrtn	CP_Drtn	8	TK_NotStart			0		
+%T	TASKPRED
+%F	task_pred_id	task_id	pred_task_id	proj_id	pred_proj_id	pred_type	lag_hr_cnt
+%R	1	2	1	1	1	PR_FS	0
+%R	2	3	2	1	1	PR_FS	0
+%R	3	4	1	1	1	PR_FS	0
+%R	4	5	4	1	1	PR_FS	0
+%R	5	6	3	1	1	PR_FS	0
+%R	6	6	5	1	1	PR_FS	0

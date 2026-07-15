@@ -1,0 +1,188 @@
+{
+ "project_name": "雙塔平行工程示範 (資源衝突)",
+ "region": "TW",
+ "start_date": "2026-03-02",
+ "work_days": "1111110",
+ "project_id": "PRJ-2026-TW-PARALLEL",
+ "tenant_id": "TENT-9981",
+ "project_duration": 12,
+ "tasks": [
+  {
+   "task_id": "PA0",
+   "task_name": "場地整備",
+   "duration": 2,
+   "predecessors": [],
+   "status": "COMPLETED",
+   "links": [],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 0,
+   "ef": 2,
+   "ls": 0,
+   "lf": 2,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "PA1",
+   "task_name": "A棟基礎",
+   "duration": 4,
+   "predecessors": [
+    "PA0"
+   ],
+   "status": "IN_PROGRESS",
+   "links": [
+    {
+     "predecessor_task_id": "PA0",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 2,
+   "ef": 6,
+   "ls": 2,
+   "lf": 6,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "PA2",
+   "task_name": "A棟結構",
+   "duration": 5,
+   "predecessors": [
+    "PA1"
+   ],
+   "status": "PENDING",
+   "links": [
+    {
+     "predecessor_task_id": "PA1",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 6,
+   "ef": 11,
+   "ls": 6,
+   "lf": 11,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "PB1",
+   "task_name": "B棟基礎",
+   "duration": 4,
+   "predecessors": [
+    "PA0"
+   ],
+   "status": "PENDING",
+   "links": [
+    {
+     "predecessor_task_id": "PA0",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 2,
+   "ef": 6,
+   "ls": 5,
+   "lf": 9,
+   "float_time": 3,
+   "is_critical": false,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "PB2",
+   "task_name": "B棟結構",
+   "duration": 2,
+   "predecessors": [
+    "PB1"
+   ],
+   "status": "PENDING",
+   "links": [
+    {
+     "predecessor_task_id": "PB1",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 6,
+   "ef": 8,
+   "ls": 9,
+   "lf": 11,
+   "float_time": 3,
+   "is_critical": false,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "PF",
+   "task_name": "竣工驗收",
+   "duration": 1,
+   "predecessors": [
+    "PA2",
+    "PB2"
+   ],
+   "status": "PENDING",
+   "links": [
+    {
+     "predecessor_task_id": "PA2",
+     "dep_type": "FS",
+     "lag_days": 0
+    },
+    {
+     "predecessor_task_id": "PB2",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 11,
+   "ef": 12,
+   "ls": 11,
+   "lf": 12,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  }
+ ],
+ "version": 1,
+ "day_dates": [
+  "2026-03-02",
+  "2026-03-03",
+  "2026-03-04",
+  "2026-03-05",
+  "2026-03-06",
+  "2026-03-07",
+  "2026-03-09",
+  "2026-03-10",
+  "2026-03-11",
+  "2026-03-12",
+  "2026-03-13",
+  "2026-03-14",
+  "2026-03-16"
+ ],
+ "wbs": []
+}

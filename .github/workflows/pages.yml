@@ -1,0 +1,129 @@
+name: Deploy demo site
+
+# Pro Batch F1 — 獨立展示站 (GitHub Pages)：靜態登陸頁 (pages/) + 真實 React
+# app 建置成的獨立展示版 (frontend/dist-demo，經 mockApi.js 完全在瀏覽器端運作，
+# 無需後端)。組裝為 _site：pages/* 為根、frontend/dist-demo 掛在 ./demo/ 之下；
+# ScheduleBoard.jsx 的 downloadWithAuth / QR 檢視器以原生 fetch 打
+# VITE_API_BASE_URL（demo 建置設為相對路徑 'api/v1'）取得的下載端點，於 Pages
+# 上沒有後端可打，改由本 workflow 複製 frontend/public/demo-assets/ 下的靜態
+# 範例檔到 _site/demo/api/v1/ 對應路徑，充當「靜態假後端」。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  pages: write
+  id-token: write
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+# 與 ci.yml 一致：Node 24（npm 11）避免 lockfile 平台標記差異，並靜音
+# "Node.js 20 actions are deprecated" 警告。
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: Build demo site + landing page
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build standalone demo (vite --mode demo)
+        working-directory: frontend
+        run: npm run build:demo
+
+      - name: Assemble _site (landing page + demo app + static download fixtures)
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          # 1) 靜態登陸頁為站台根目錄
+          cp -r pages/. _site/
+          # 2) 獨立展示版 React app 掛在 ./demo/ 之下（vite.config.js base 已設為
+          #    /cpm-scheduling-saas/demo/，與此處目錄結構一致）
+          mkdir -p _site/demo
+          cp -r frontend/dist-demo/. _site/demo/
+
+          # 3) 靜態「假後端」下載端點：downloadWithAuth / QR 檢視器以原生 fetch
+          #    打 VITE_API_BASE_URL（demo 建置為相對路徑 api/v1），於 Pages 上
+          #    以真實靜態檔取代（無後端可打）。
+          API_DIR="_site/demo/api/v1"
+          FIXTURES="frontend/public/demo-assets"
+
+          for pid in PRJ-2026-TW-001 PRJ-2026-TW-PARALLEL; do
+            proj_dir="${API_DIR}/projects/${pid}"
+            mkdir -p "${proj_dir}"
+            cp "${FIXTURES}/sample.xer" "${proj_dir}/export.xer"
+            cp "${FIXTURES}/sample.mspdi.xml" "${proj_dir}/export.mspdi.xml"
+            cp "${FIXTURES}/sample.xlsx" "${proj_dir}/export.xlsx"
+            cp "${FIXTURES}/sample.pdf" "${proj_dir}/export.pdf"
+            cp "${FIXTURES}/sample-report.pdf" "${proj_dir}/report"
+          done
+
+          declare -A TASKS
+          TASKS[PRJ-2026-TW-001]="T-01 T-02 T-03"
+          TASKS[PRJ-2026-TW-PARALLEL]="PA0 PA1 PA2 PB1 PB2 PF"
+
+          for pid in "${!TASKS[@]}"; do
+            for tid in ${TASKS[$pid]}; do
+              task_dir="${API_DIR}/projects/${pid}/tasks/${tid}"
+              mkdir -p "${task_dir}"
+              cp "${FIXTURES}/sample-qr.png" "${task_dir}/qr.png"
+            done
+          done
+
+          echo "::group::_site/demo/api/v1 contents"
+          find "${API_DIR}" -type f | sort
+          echo "::endgroup::"
+
+      - name: Sanity check — dist-demo references the /cpm-scheduling-saas/demo/ base path
+        run: |
+          set -euo pipefail
+          node -e "
+            const fs = require('fs');
+            const html = fs.readFileSync('_site/demo/index.html', 'utf8');
+            if (!html.includes('/cpm-scheduling-saas/demo/')) {
+              console.error('FAIL: dist-demo/index.html does not reference /cpm-scheduling-saas/demo/');
+              console.error(html);
+              process.exit(1);
+            }
+            console.log('OK: dist-demo/index.html asset paths reference /cpm-scheduling-saas/demo/');
+          "
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

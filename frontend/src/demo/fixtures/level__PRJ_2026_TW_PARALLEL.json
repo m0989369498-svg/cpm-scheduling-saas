@@ -1,0 +1,276 @@
+{
+ "original_duration": 12,
+ "leveled_duration": 12,
+ "extended": false,
+ "tasks": [
+  {
+   "task_id": "PA0",
+   "task_name": "場地整備",
+   "duration": 2,
+   "predecessors": [],
+   "status": "COMPLETED",
+   "links": [],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 0,
+   "ef": 2,
+   "ls": 0,
+   "lf": 2,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "PA1",
+   "task_name": "A棟基礎",
+   "duration": 4,
+   "predecessors": [
+    "PA0"
+   ],
+   "status": "IN_PROGRESS",
+   "links": [
+    {
+     "predecessor_task_id": "PA0",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 2,
+   "ef": 6,
+   "ls": 2,
+   "lf": 6,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "PB1",
+   "task_name": "B棟基礎",
+   "duration": 4,
+   "predecessors": [
+    "PA0"
+   ],
+   "status": "PENDING",
+   "links": [
+    {
+     "predecessor_task_id": "PA0",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 5,
+   "ef": 9,
+   "ls": 5,
+   "lf": 9,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "PA2",
+   "task_name": "A棟結構",
+   "duration": 5,
+   "predecessors": [
+    "PA1"
+   ],
+   "status": "PENDING",
+   "links": [
+    {
+     "predecessor_task_id": "PA1",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 6,
+   "ef": 11,
+   "ls": 6,
+   "lf": 11,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "PB2",
+   "task_name": "B棟結構",
+   "duration": 2,
+   "predecessors": [
+    "PB1"
+   ],
+   "status": "PENDING",
+   "links": [
+    {
+     "predecessor_task_id": "PB1",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 9,
+   "ef": 11,
+   "ls": 9,
+   "lf": 11,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "PF",
+   "task_name": "竣工驗收",
+   "duration": 1,
+   "predecessors": [
+    "PA2",
+    "PB2"
+   ],
+   "status": "PENDING",
+   "links": [
+    {
+     "predecessor_task_id": "PA2",
+     "dep_type": "FS",
+     "lag_days": 0
+    },
+    {
+     "predecessor_task_id": "PB2",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 11,
+   "ef": 12,
+   "ls": 11,
+   "lf": 12,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  }
+ ],
+ "timeline": [
+  {
+   "day": 0,
+   "loads": {
+    "manpower": 5
+   },
+   "over": false
+  },
+  {
+   "day": 1,
+   "loads": {
+    "manpower": 5
+   },
+   "over": false
+  },
+  {
+   "day": 2,
+   "loads": {
+    "crane": 1,
+    "manpower": 10
+   },
+   "over": false
+  },
+  {
+   "day": 3,
+   "loads": {
+    "crane": 1,
+    "manpower": 10
+   },
+   "over": false
+  },
+  {
+   "day": 4,
+   "loads": {
+    "crane": 1,
+    "manpower": 10
+   },
+   "over": false
+  },
+  {
+   "day": 5,
+   "loads": {
+    "crane": 2,
+    "manpower": 20
+   },
+   "over": true
+  },
+  {
+   "day": 6,
+   "loads": {
+    "crane": 2,
+    "manpower": 22
+   },
+   "over": true
+  },
+  {
+   "day": 7,
+   "loads": {
+    "crane": 2,
+    "manpower": 22
+   },
+   "over": true
+  },
+  {
+   "day": 8,
+   "loads": {
+    "crane": 2,
+    "manpower": 22
+   },
+   "over": true
+  },
+  {
+   "day": 9,
+   "loads": {
+    "crane": 2,
+    "manpower": 20
+   },
+   "over": true
+  },
+  {
+   "day": 10,
+   "loads": {
+    "crane": 2,
+    "manpower": 20
+   },
+   "over": true
+  },
+  {
+   "day": 11,
+   "loads": {
+    "manpower": 4
+   },
+   "over": false
+  }
+ ],
+ "over_capacity_days": [
+  5,
+  6,
+  7,
+  8,
+  9,
+  10
+ ],
+ "unresolved": [
+  "PA1",
+  "PA2",
+  "PB1",
+  "PB2"
+ ]
+}

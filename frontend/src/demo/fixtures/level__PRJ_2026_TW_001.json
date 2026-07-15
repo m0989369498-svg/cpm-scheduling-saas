@@ -1,0 +1,168 @@
+{
+ "original_duration": 10,
+ "leveled_duration": 10,
+ "extended": false,
+ "tasks": [
+  {
+   "task_id": "T-01",
+   "task_name": "基地開挖",
+   "duration": 5,
+   "predecessors": [],
+   "status": "COMPLETED",
+   "links": [],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 0,
+   "ef": 5,
+   "ls": 0,
+   "lf": 5,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "T-02",
+   "task_name": "一樓鋼筋綁紮",
+   "duration": 3,
+   "predecessors": [
+    "T-01"
+   ],
+   "status": "IN_PROGRESS",
+   "links": [
+    {
+     "predecessor_task_id": "T-01",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 5,
+   "ef": 8,
+   "ls": 5,
+   "lf": 8,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "T-03",
+   "task_name": "一樓混凝土澆置",
+   "duration": 2,
+   "predecessors": [
+    "T-02"
+   ],
+   "status": "PENDING",
+   "links": [
+    {
+     "predecessor_task_id": "T-02",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 8,
+   "ef": 10,
+   "ls": 8,
+   "lf": 10,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  }
+ ],
+ "timeline": [
+  {
+   "day": 0,
+   "loads": {
+    "crane": 1,
+    "manpower": 10
+   },
+   "over": false
+  },
+  {
+   "day": 1,
+   "loads": {
+    "crane": 1,
+    "manpower": 10
+   },
+   "over": false
+  },
+  {
+   "day": 2,
+   "loads": {
+    "crane": 1,
+    "manpower": 10
+   },
+   "over": false
+  },
+  {
+   "day": 3,
+   "loads": {
+    "crane": 1,
+    "manpower": 10
+   },
+   "over": false
+  },
+  {
+   "day": 4,
+   "loads": {
+    "crane": 1,
+    "manpower": 10
+   },
+   "over": false
+  },
+  {
+   "day": 5,
+   "loads": {
+    "crane": 2,
+    "manpower": 15
+   },
+   "over": true
+  },
+  {
+   "day": 6,
+   "loads": {
+    "crane": 2,
+    "manpower": 15
+   },
+   "over": false
+  },
+  {
+   "day": 7,
+   "loads": {
+    "crane": 2,
+    "manpower": 15
+   },
+   "over": false
+  },
+  {
+   "day": 8,
+   "loads": {
+    "crane": 2,
+    "manpower": 8
+   },
+   "over": false
+  },
+  {
+   "day": 9,
+   "loads": {
+    "crane": 2,
+    "manpower": 8
+   },
+   "over": false
+  }
+ ],
+ "over_capacity_days": [
+  5
+ ],
+ "unresolved": [
+  "T-02"
+ ]
+}

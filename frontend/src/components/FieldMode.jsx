@@ -546,6 +546,15 @@ export function FieldPhotoThumb({ photo, canDelete, onDelete }) {
   const [objUrl, setObjUrl] = useState('');
 
   useEffect(() => {
+    // Pro Batch F1（demo 模式）：mockApi.js 沒有真實的 /photos/{id} 位元組端點
+    // （<img> 無法帶 Bearer，一律驗證下載後才顯示，demo 沒有後端可打），改以
+    // data: URI 直接承載圖片內容於 photo.url。此為最小相容改動：photo.url 為
+    // data: URI 時直接當 <img src> 使用；正式環境（photo.url 為一般端點路徑）
+    // 行為不變，仍以驗證過的 fetch 取得 blob 再建立物件 URL。
+    if (typeof photo.url === 'string' && photo.url.startsWith('data:')) {
+      setObjUrl(photo.url);
+      return undefined;
+    }
     let revoked = false;
     let url = '';
     const headers = { 'X-Tenant-Id': tenantId, 'X-Region': region };
@@ -563,7 +572,7 @@ export function FieldPhotoThumb({ photo, canDelete, onDelete }) {
       if (url) URL.revokeObjectURL(url);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photo.id]);
+  }, [photo.id, photo.url]);
 
   return (
     <div className="field-photo-thumb">

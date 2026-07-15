@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CPM 工程排程與自動化平台</title>
+<meta name="description" content="企業級要徑法 (CPM) 工程排程與自動化 SaaS — 甘特圖、資源撫平、EVM 實獲值、DCMA 健康度、現場行動回報，一站到位。" />
+<link rel="icon" type="image/svg+xml" href="./demo/icon.svg" />
+<style>
+  :root {
+    --bg: #f7f8fb;
+    --bg-alt: #ffffff;
+    --text: #1a2233;
+    --text-muted: #5b6472;
+    --border: #e3e6ec;
+    --brand: #2c7be5;
+    --brand-dark: #1c5fc0;
+    --accent: #8e44ad;
+    --shadow: 0 1px 3px rgba(20, 30, 50, 0.08), 0 8px 24px rgba(20, 30, 50, 0.06);
+    --radius: 14px;
+  }
+  :root[data-theme="dark"] {
+    --bg: #10141c;
+    --bg-alt: #161c27;
+    --text: #eef1f6;
+    --text-muted: #9aa4b5;
+    --border: #262e3d;
+    --brand: #5b9cf2;
+    --brand-dark: #4c8adf;
+    --accent: #b478d0;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10141c;
+      --bg-alt: #161c27;
+      --text: #eef1f6;
+      --text-muted: #9aa4b5;
+      --border: #262e3d;
+      --brand: #5b9cf2;
+      --brand-dark: #4c8adf;
+      --accent: #b478d0;
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  a { color: var(--brand); }
+  img { max-width: 100%; display: block; }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---- Nav ---- */
+  nav.top {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: color-mix(in srgb, var(--bg-alt) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  nav.top .wrap {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 60px;
+  }
+  .brand-mark {
+    font-weight: 800;
+    font-size: 17px;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .brand-mark .logo-dot {
+    width: 10px; height: 10px; border-radius: 3px;
+    background: linear-gradient(135deg, var(--brand), var(--accent));
+    display: inline-block;
+  }
+  nav.top .nav-links { display: flex; gap: 22px; font-size: 14px; }
+  nav.top .nav-links a { color: var(--text-muted); text-decoration: none; }
+  nav.top .nav-links a:hover { color: var(--text); }
+  .btn-nav-cta {
+    background: var(--brand);
+    color: #fff !important;
+    padding: 8px 16px;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  /* ---- Hero ---- */
+  header.hero {
+    padding: 76px 0 64px;
+    text-align: center;
+    position: relative;
+  }
+  header.hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(600px 300px at 20% 0%, color-mix(in srgb, var(--brand) 14%, transparent), transparent 70%),
+      radial-gradient(600px 300px at 80% 10%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%);
+    pointer-events: none;
+    z-index: -1;
+  }
+  .eyebrow {
+    display: inline-block;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--brand);
+    background: color-mix(in srgb, var(--brand) 12%, transparent);
+    padding: 5px 14px;
+    border-radius: 999px;
+    margin-bottom: 22px;
+    letter-spacing: 0.02em;
+  }
+  h1.hero-title {
+    font-size: clamp(32px, 5vw, 52px);
+    font-weight: 800;
+    margin: 0 0 18px;
+    letter-spacing: -0.01em;
+  }
+  h1.hero-title .accent-word {
+    background: linear-gradient(135deg, var(--brand), var(--accent));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  p.hero-sub {
+    font-size: clamp(15px, 2vw, 19px);
+    color: var(--text-muted);
+    max-width: 680px;
+    margin: 0 auto 36px;
+  }
+  .hero-ctas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    justify-content: center;
+    margin-bottom: 20px;
+  }
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: linear-gradient(135deg, var(--brand), var(--brand-dark));
+    color: #fff;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 17px;
+    padding: 16px 34px;
+    border-radius: 12px;
+    box-shadow: 0 10px 24px color-mix(in srgb, var(--brand) 40%, transparent);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 14px 30px color-mix(in srgb, var(--brand) 46%, transparent); }
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-alt);
+    color: var(--text);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 15px;
+    padding: 15px 26px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover { border-color: var(--brand); }
+  .hero-creds {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--text-muted);
+    background: var(--bg-alt);
+    border: 1px dashed var(--border);
+    padding: 10px 18px;
+    border-radius: 999px;
+    margin: 0 auto;
+  }
+  .hero-creds code {
+    background: color-mix(in srgb, var(--brand) 10%, transparent);
+    color: var(--brand);
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 12.5px;
+  }
+  .hero-shot {
+    margin: 56px auto 0;
+    max-width: 960px;
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+  }
+  .hero-shot img { width: 100%; }
+
+  /* ---- Section shell ---- */
+  section { padding: 72px 0; }
+  section.alt { background: var(--bg-alt); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .section-head { text-align: center; max-width: 640px; margin: 0 auto 44px; }
+  .section-head .eyebrow { margin-bottom: 14px; }
+  .section-head h2 { font-size: clamp(24px, 3.4vw, 34px); font-weight: 800; margin: 0 0 12px; }
+  .section-head p { color: var(--text-muted); font-size: 15.5px; margin: 0; }
+
+  /* ---- Feature grid ---- */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 24px;
+  }
+  .feature-card {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+  }
+  .feature-card .shot {
+    aspect-ratio: 16/10;
+    overflow: hidden;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .feature-card .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+  .feature-card .body { padding: 20px 22px 24px; }
+  .feature-card h3 { font-size: 16.5px; margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
+  .feature-card p { font-size: 13.8px; color: var(--text-muted); margin: 0; }
+  .feature-card .tag {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    padding: 2px 9px;
+    border-radius: 999px;
+    margin-bottom: 10px;
+  }
+
+  /* ---- Quick start ---- */
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 20px;
+    counter-reset: step;
+  }
+  .step {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 26px 22px;
+    box-shadow: var(--shadow);
+    position: relative;
+  }
+  .step .num {
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--brand), var(--accent));
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800;
+    font-size: 16px;
+    margin-bottom: 14px;
+  }
+  .step h3 { font-size: 15.5px; margin: 0 0 6px; }
+  .step p { font-size: 13.5px; color: var(--text-muted); margin: 0; }
+
+  /* ---- Download ---- */
+  .download-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 18px;
+  }
+  .dl-card {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    box-shadow: var(--shadow);
+  }
+  .dl-card .icon { font-size: 26px; }
+  .dl-card h3 { font-size: 15px; margin: 0; }
+  .dl-card p { font-size: 13px; color: var(--text-muted); margin: 0; flex: 1; }
+  .dl-card a.dl-link {
+    font-size: 13.5px;
+    font-weight: 700;
+    text-decoration: none;
+    color: var(--brand);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .dl-card a.dl-link:hover { text-decoration: underline; }
+
+  /* ---- Footer ---- */
+  footer {
+    padding: 40px 0 48px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+  footer .wrap { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+  footer a { color: var(--text-muted); text-decoration: none; }
+  footer a:hover { color: var(--brand); }
+  footer .foot-links { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+
+  @media (max-width: 640px) {
+    nav.top .nav-links { display: none; }
+    header.hero { padding: 52px 0 44px; }
+    section { padding: 52px 0; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <div class="brand-mark"><span class="logo-dot"></span>CPM 工程排程平台</div>
+    <div class="nav-links">
+      <a href="#features">功能</a>
+      <a href="#quickstart">三分鐘上手</a>
+      <a href="#download">下載</a>
+    </div>
+    <a class="btn-nav-cta" href="./demo/">立即體驗</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow">企業級 CPM 要徑法排程 · 免安裝線上體驗</span>
+    <h1 class="hero-title">CPM 工程排程與<br /><span class="accent-word">自動化平台</span></h1>
+    <p class="hero-sub">
+      從甘特圖與要徑法排程，到資源撫平、蒙地卡羅風險模擬、EVM 實獲值管理、DCMA 14 點健康度檢核，
+      再到工地現場行動回報 —— 一個平台，管好整個工程排程生命週期。
+    </p>
+    <div class="hero-ctas">
+      <a class="btn-primary" href="./demo/">🚀 立即體驗 Demo</a>
+      <a class="btn-secondary" href="#features">看功能總覽 ↓</a>
+    </div>
+    <div class="hero-creds">
+      體驗帳號 <code>admin@tw</code> · 密碼 <code>demo1234</code>（已預先填入，開啟即可登入）
+    </div>
+    <div class="hero-shot">
+      <img src="./assets/screenshots/02-board-gantt.png" alt="甘特圖與要徑法排程畫面" loading="lazy" />
+    </div>
+  </div>
+</header>
+
+<section id="features" class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">功能總覽</span>
+      <h2>排程、資源、成本、風險，一站管理</h2>
+      <p>以下畫面皆擷取自 Demo 站台的實際運作結果，所見即所得。</p>
+    </div>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="shot"><img src="./assets/screenshots/02-board-gantt.png" alt="甘特圖與要徑法 (CPM) 排程" loading="lazy" /></div>
+        <div class="body">
+          <span class="tag">核心排程</span>
+          <h3>📊 甘特圖 + 要徑法 (CPM)</h3>
+          <p>拖曳調整工期即時重算要徑，支援 FS/SS/FF/SF 相依與提前量/落後量、多種活動限制條件。</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="shot"><img src="./assets/screenshots/03-wbs.png" alt="WBS 工作分解結構" loading="lazy" /></div>
+        <div class="body">
+          <span class="tag">結構化管理</span>
+          <h3>🗂️ WBS 工作分解結構</h3>
+          <p>樹狀階層管理任務分類，對齊企業標準工程分解慣例，方便跨專案彙總分析。</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="shot"><img src="./assets/screenshots/04-resources-leveling.png" alt="資源撫平" loading="lazy" /></div>
+        <div class="body">
+          <span class="tag">資源管理</span>
+          <h3>⚖️ 資源撫平 (Leveling)</h3>
+          <p>依資源上限自動調整排程避免超載，逐日載荷一覽無遺，超載日一鍵標示。</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="shot"><img src="./assets/screenshots/09-enterprise-allocation.png" alt="投資組合資源分配" loading="lazy" /></div>
+        <div class="body">
+          <span class="tag">企業級</span>
+          <h3>🏢 投資組合資源分配</h3>
+          <p>跨專案彙整企業資源池使用狀況，週峰值與超載一目了然，支撐跨案調度決策。</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="shot"><img src="./assets/screenshots/05-cost.png" alt="成本負荷" loading="lazy" /></div>
+        <div class="body">
+          <span class="tag">成本控管</span>
+          <h3>💰 資源成本負荷</h3>
+          <p>依資源費率與類別自動彙總每日/每 WBS 成本負荷曲線，預算超支提前示警。</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="shot"><img src="./assets/screenshots/07-progress-evm.png" alt="進度追蹤與 EVM 實獲值管理" loading="lazy" /></div>
+        <div class="body">
+          <span class="tag">績效管理</span>
+          <h3>📈 進度追蹤 + EVM 實獲值</h3>
+          <p>PV/EV/AC/SPI/CPI 標準實獲值指標即時計算，風險門檻觸發自動預警拋轉。</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="shot"><img src="./assets/screenshots/06-dcma-health.png" alt="DCMA 14 點排程健康度" loading="lazy" /></div>
+        <div class="body">
+          <span class="tag">品質保證</span>
+          <h3>✅ DCMA 14 點健康度檢核</h3>
+          <p>比照美國國防後勤局 (DCMA) 14 點排程品質標準逐項檢核，排程體質一目了然。</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="shot"><img src="./assets/screenshots/08-dashboard.png" alt="租戶儀表板" loading="lazy" /></div>
+        <div class="body">
+          <span class="tag">總覽</span>
+          <h3>🖥️ 租戶儀表板</h3>
+          <p>跨專案 KPI 彙總一頁掌握，進度、風險、成本全局盡收眼底。</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="shot"><img src="./assets/screenshots/10-field-mode-mobile.png" alt="行動裝置現場回報模式" loading="lazy" /></div>
+        <div class="body">
+          <span class="tag">行動裝置</span>
+          <h3>📱 工地現場模式 (PWA)</h3>
+          <p>掃 QR 深連結直達任務，離線也能拍照回報進度，恢復連線自動重播佇列。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Quick Start</span>
+      <h2>三分鐘上手</h2>
+      <p>Demo 完全在瀏覽器中運作，資料僅存在記憶體，重新整理即還原，放心操作。</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="num">1</div>
+        <h3>🔑 登入</h3>
+        <p>點擊「立即體驗 Demo」，帳密已預先填入（admin@tw / demo1234），直接送出即可進入系統。</p>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <h3>📁 選專案</h3>
+        <p>從專案清單挑選示範專案（「2026 示範建案工程排程」或「雙塔平行工程示範 (資源衝突)」），進入專案總覽。</p>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <h3>📊 看甘特圖</h3>
+        <p>切換至排程分頁，拖曳調整任務工期，觀察要徑即時重新計算、關鍵路徑即時反白。</p>
+      </div>
+      <div class="step">
+        <div class="num">4</div>
+        <h3>📱 現場模式</h3>
+        <p>切換至行動裝置檢視或掃描任務 QR code，體驗工地現場回報、拍照上傳的完整流程。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="download" class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">取得原始碼與文件</span>
+      <h2>下載與延伸閱讀</h2>
+      <p>原始碼開源於 GitHub（MIT 授權），歡迎自行部署、二次開發或評估落地方案。</p>
+    </div>
+    <div class="download-grid">
+      <div class="dl-card">
+        <div class="icon">🐙</div>
+        <h3>GitHub 原始碼倉庫</h3>
+        <p>完整前後端原始碼、資料庫 schema、CI/CD 設定，MIT 授權開源。</p>
+        <a class="dl-link" href="https://github.com/m0989369498-svg/cpm-scheduling-saas" target="_blank" rel="noopener noreferrer">前往 GitHub Repo →</a>
+      </div>
+      <div class="dl-card">
+        <div class="icon">📦</div>
+        <h3>原始碼壓縮包 (.zip)</h3>
+        <p>main 分支最新原始碼打包下載，免裝 Git 即可取得完整專案。</p>
+        <a class="dl-link" href="https://github.com/m0989369498-svg/cpm-scheduling-saas/archive/refs/heads/main.zip" target="_blank" rel="noopener noreferrer">下載 ZIP →</a>
+      </div>
+      <div class="dl-card">
+        <div class="icon">📑</div>
+        <h3>教學簡報</h3>
+        <p>CPM 使用教學簡報（.pptx），功能導覽與操作示範一次看懂。</p>
+        <a class="dl-link" href="./assets/CPM-使用教學簡報.pptx">下載簡報 →</a>
+      </div>
+      <div class="dl-card">
+        <div class="icon">🌏</div>
+        <h3>兩岸落地計畫</h3>
+        <p>跨海峽兩岸部署與合規落地規劃書（.pdf）。</p>
+        <a class="dl-link" href="./assets/CPM-兩岸落地計畫.pdf">下載 PDF →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-links">
+      <a href="./demo/">立即體驗 Demo</a>
+      <a href="https://github.com/m0989369498-svg/cpm-scheduling-saas" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://github.com/m0989369498-svg/cpm-scheduling-saas/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
+    </div>
+    <div>© 2026 CPM 工程排程與自動化平台 · 以 MIT 授權開源</div>
+  </div>
+</footer>
+
+</body>
+</html>

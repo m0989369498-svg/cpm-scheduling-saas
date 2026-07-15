@@ -1,0 +1,82 @@
+{
+ "iterations": 1000,
+ "mean": 13.26,
+ "std": 1.5512575543732237,
+ "p10": 11,
+ "p50": 13,
+ "p90": 15,
+ "s_curve": [
+  {
+   "duration": 9,
+   "probability": 0.003
+  },
+  {
+   "duration": 10,
+   "probability": 0.023
+  },
+  {
+   "duration": 11,
+   "probability": 0.122
+  },
+  {
+   "duration": 12,
+   "probability": 0.336
+  },
+  {
+   "duration": 13,
+   "probability": 0.569
+  },
+  {
+   "duration": 14,
+   "probability": 0.786
+  },
+  {
+   "duration": 15,
+   "probability": 0.928
+  },
+  {
+   "duration": 16,
+   "probability": 0.979
+  },
+  {
+   "duration": 17,
+   "probability": 0.995
+  },
+  {
+   "duration": 18,
+   "probability": 0.999
+  },
+  {
+   "duration": 19,
+   "probability": 1.0
+  }
+ ],
+ "criticality": [
+  {
+   "task_id": "PA0",
+   "index": 1.0
+  },
+  {
+   "task_id": "PA1",
+   "index": 0.991
+  },
+  {
+   "task_id": "PA2",
+   "index": 0.991
+  },
+  {
+   "task_id": "PB1",
+   "index": 0.039
+  },
+  {
+   "task_id": "PB2",
+   "index": 0.039
+  },
+  {
+   "task_id": "PF",
+   "index": 1.0
+  }
+ ],
+ "deadline": null,
+ "on_time_probability": null
+}

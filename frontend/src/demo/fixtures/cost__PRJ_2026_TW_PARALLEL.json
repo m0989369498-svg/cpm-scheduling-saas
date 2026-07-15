@@ -1,0 +1,143 @@
+{
+ "total_cost": 92200.0,
+ "by_resource": {
+  "crane": 48000.0,
+  "manpower": 44200.0
+ },
+ "by_category": {
+  "equipment": 48000.0,
+  "labor": 44200.0
+ },
+ "by_wbs": {
+  "": 92200.0
+ },
+ "per_task": [
+  {
+   "task_id": "PA0",
+   "task_name": "場地整備",
+   "duration": 2,
+   "cost": 2600.0,
+   "per_resource": {
+    "crane": 0.0,
+    "manpower": 2600.0
+   }
+  },
+  {
+   "task_id": "PA1",
+   "task_name": "A棟基礎",
+   "duration": 4,
+   "cost": 23200.0,
+   "per_resource": {
+    "crane": 12800.0,
+    "manpower": 10400.0
+   }
+  },
+  {
+   "task_id": "PA2",
+   "task_name": "A棟結構",
+   "duration": 5,
+   "cost": 31600.0,
+   "per_resource": {
+    "crane": 16000.0,
+    "manpower": 15600.0
+   }
+  },
+  {
+   "task_id": "PB1",
+   "task_name": "B棟基礎",
+   "duration": 4,
+   "cost": 23200.0,
+   "per_resource": {
+    "crane": 12800.0,
+    "manpower": 10400.0
+   }
+  },
+  {
+   "task_id": "PB2",
+   "task_name": "B棟結構",
+   "duration": 2,
+   "cost": 10560.0,
+   "per_resource": {
+    "crane": 6400.0,
+    "manpower": 4160.0
+   }
+  },
+  {
+   "task_id": "PF",
+   "task_name": "竣工驗收",
+   "duration": 1,
+   "cost": 1040.0,
+   "per_resource": {
+    "crane": 0.0,
+    "manpower": 1040.0
+   }
+  }
+ ],
+ "cost_curve": [
+  {
+   "day": 0,
+   "cost": 1300.0,
+   "cumulative": 1300.0
+  },
+  {
+   "day": 1,
+   "cost": 1300.0,
+   "cumulative": 2600.0
+  },
+  {
+   "day": 2,
+   "cost": 11600.0,
+   "cumulative": 14200.0
+  },
+  {
+   "day": 3,
+   "cost": 11600.0,
+   "cumulative": 25800.0
+  },
+  {
+   "day": 4,
+   "cost": 11600.0,
+   "cumulative": 37400.0
+  },
+  {
+   "day": 5,
+   "cost": 11600.0,
+   "cumulative": 49000.0
+  },
+  {
+   "day": 6,
+   "cost": 11600.0,
+   "cumulative": 60600.0
+  },
+  {
+   "day": 7,
+   "cost": 11600.0,
+   "cumulative": 72200.0
+  },
+  {
+   "day": 8,
+   "cost": 6320.0,
+   "cumulative": 78520.0
+  },
+  {
+   "day": 9,
+   "cost": 6320.0,
+   "cumulative": 84840.0
+  },
+  {
+   "day": 10,
+   "cost": 6320.0,
+   "cumulative": 91160.0
+  },
+  {
+   "day": 11,
+   "cost": 1040.0,
+   "cumulative": 92200.0
+  },
+  {
+   "day": 12,
+   "cost": 0.0,
+   "cumulative": 92200.0
+  }
+ ]
+}

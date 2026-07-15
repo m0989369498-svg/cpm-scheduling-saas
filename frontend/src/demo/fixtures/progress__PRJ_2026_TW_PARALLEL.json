@@ -1,0 +1,50 @@
+[
+ {
+  "task_id": "PA0",
+  "budget": 10000.0,
+  "percent_complete": 100,
+  "actual_cost": 10000.0,
+  "actual_start_day": 0,
+  "actual_finish_day": 2
+ },
+ {
+  "task_id": "PA1",
+  "budget": 40000.0,
+  "percent_complete": 100,
+  "actual_cost": 39000.0,
+  "actual_start_day": 2,
+  "actual_finish_day": 6
+ },
+ {
+  "task_id": "PA2",
+  "budget": 50000.0,
+  "percent_complete": 20,
+  "actual_cost": 11000.0,
+  "actual_start_day": 6,
+  "actual_finish_day": null
+ },
+ {
+  "task_id": "PB1",
+  "budget": 35000.0,
+  "percent_complete": 75,
+  "actual_cost": 26000.0,
+  "actual_start_day": 2,
+  "actual_finish_day": null
+ },
+ {
+  "task_id": "PB2",
+  "budget": 20000.0,
+  "percent_complete": 0,
+  "actual_cost": 0.0,
+  "actual_start_day": null,
+  "actual_finish_day": null
+ },
+ {
+  "task_id": "PF",
+  "budget": 15000.0,
+  "percent_complete": 0,
+  "actual_cost": 0.0,
+  "actual_start_day": null,
+  "actual_finish_day": null
+ }
+]

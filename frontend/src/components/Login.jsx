@@ -13,6 +13,10 @@ import { t } from '../i18n'
  * 登入成功後由 App 依 store.token 切換到 ScheduleBoard。
  */
 const DEMO = import.meta.env.VITE_DEMO_LOGIN === '1'
+// Pro Batch F1：獨立展示站（GitHub Pages，瀏覽器端 mock 後端）僅提供 TW 租戶
+// 帳號（admin/editor/viewer@tw）；admin@cn 只存在於真實後端的種子資料，
+// 在 standalone demo 顯示會誤導（登入必 401），故僅於非 standalone 時顯示。
+const STANDALONE = import.meta.env.VITE_DEMO_STANDALONE === '1'
 
 export default function Login() {
   const store = useScheduleStore()
@@ -81,7 +85,11 @@ export default function Login() {
           <div className="login-hint">
             <div className="login-hint-title">{t(region, 'demoAccounts')}</div>
             <div className="login-hint-line">admin@tw / demo1234</div>
-            <div className="login-hint-line">admin@cn / demo1234</div>
+            {STANDALONE ? (
+              <div className="login-hint-line">editor@tw ・ viewer@tw / demo1234</div>
+            ) : (
+              <div className="login-hint-line">admin@cn / demo1234</div>
+            )}
           </div>
         )}
       </form>

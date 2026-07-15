@@ -1,0 +1,23 @@
+[
+ {
+  "task_id": "T-01",
+  "optimistic_duration": 3,
+  "most_likely_duration": 5,
+  "pessimistic_duration": 9,
+  "criticality_index": 1.0
+ },
+ {
+  "task_id": "T-02",
+  "optimistic_duration": 2,
+  "most_likely_duration": 3,
+  "pessimistic_duration": 7,
+  "criticality_index": 1.0
+ },
+ {
+  "task_id": "T-03",
+  "optimistic_duration": 1,
+  "most_likely_duration": 2,
+  "pessimistic_duration": 5,
+  "criticality_index": 1.0
+ }
+]

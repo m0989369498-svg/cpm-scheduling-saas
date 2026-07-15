@@ -1,0 +1,18 @@
+[
+ {
+  "project_id": "PRJ-2026-TW-001",
+  "project_name": "2026 示範建案工程排程",
+  "region": "TW",
+  "tenant_id": "TENT-9981",
+  "task_count": 3,
+  "project_duration": 10
+ },
+ {
+  "project_id": "PRJ-2026-TW-PARALLEL",
+  "project_name": "雙塔平行工程示範 (資源衝突)",
+  "region": "TW",
+  "tenant_id": "TENT-9981",
+  "task_count": 6,
+  "project_duration": 12
+ }
+]

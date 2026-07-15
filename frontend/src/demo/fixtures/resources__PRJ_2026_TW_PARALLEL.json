@@ -1,0 +1,43 @@
+{
+ "limits": [
+  {
+   "resource_type": "crane",
+   "max_capacity": 1,
+   "unit_cost": 3200.0,
+   "category": "equipment"
+  },
+  {
+   "resource_type": "manpower",
+   "max_capacity": 20,
+   "unit_cost": 260.0,
+   "category": "labor"
+  }
+ ],
+ "demands": {
+  "PA0": {
+   "crane": 0,
+   "manpower": 5
+  },
+  "PA1": {
+   "crane": 1,
+   "manpower": 10
+  },
+  "PA2": {
+   "crane": 1,
+   "manpower": 12
+  },
+  "PB1": {
+   "crane": 1,
+   "manpower": 10
+  },
+  "PB2": {
+   "crane": 1,
+   "manpower": 8
+  },
+  "PF": {
+   "crane": 0,
+   "manpower": 4
+  }
+ },
+ "calendars": []
+}

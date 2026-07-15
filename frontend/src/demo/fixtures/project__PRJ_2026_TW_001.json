@@ -1,0 +1,99 @@
+{
+ "project_name": "2026 示範建案工程排程",
+ "region": "TW",
+ "start_date": "2026-03-02",
+ "work_days": "1111110",
+ "project_id": "PRJ-2026-TW-001",
+ "tenant_id": "TENT-9981",
+ "project_duration": 10,
+ "tasks": [
+  {
+   "task_id": "T-01",
+   "task_name": "基地開挖",
+   "duration": 5,
+   "predecessors": [],
+   "status": "COMPLETED",
+   "links": [],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 0,
+   "ef": 5,
+   "ls": 0,
+   "lf": 5,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "T-02",
+   "task_name": "一樓鋼筋綁紮",
+   "duration": 3,
+   "predecessors": [
+    "T-01"
+   ],
+   "status": "IN_PROGRESS",
+   "links": [
+    {
+     "predecessor_task_id": "T-01",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 5,
+   "ef": 8,
+   "ls": 5,
+   "lf": 8,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  },
+  {
+   "task_id": "T-03",
+   "task_name": "一樓混凝土澆置",
+   "duration": 2,
+   "predecessors": [
+    "T-02"
+   ],
+   "status": "PENDING",
+   "links": [
+    {
+     "predecessor_task_id": "T-02",
+     "dep_type": "FS",
+     "lag_days": 0
+    }
+   ],
+   "wbs_code": null,
+   "constraint_type": null,
+   "constraint_day": null,
+   "es": 8,
+   "ef": 10,
+   "ls": 8,
+   "lf": 10,
+   "float_time": 0,
+   "is_critical": true,
+   "constraint_violated": false,
+   "resource_demands": null
+  }
+ ],
+ "version": 0,
+ "day_dates": [
+  "2026-03-02",
+  "2026-03-03",
+  "2026-03-04",
+  "2026-03-05",
+  "2026-03-06",
+  "2026-03-07",
+  "2026-03-09",
+  "2026-03-10",
+  "2026-03-11",
+  "2026-03-12",
+  "2026-03-13"
+ ],
+ "wbs": []
+}

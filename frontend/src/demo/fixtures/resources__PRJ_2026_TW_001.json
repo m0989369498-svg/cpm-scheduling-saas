@@ -1,0 +1,44 @@
+{
+ "limits": [
+  {
+   "resource_type": "crane",
+   "max_capacity": 2,
+   "unit_cost": 3000.0,
+   "category": "equipment"
+  },
+  {
+   "resource_type": "manpower",
+   "max_capacity": 20,
+   "unit_cost": 250.0,
+   "category": "labor"
+  }
+ ],
+ "demands": {
+  "T-01": {
+   "crane": 1,
+   "manpower": 10
+  },
+  "T-02": {
+   "crane": 2,
+   "manpower": 15
+  },
+  "T-03": {
+   "crane": 2,
+   "manpower": 8
+  }
+ },
+ "calendars": [
+  {
+   "resource_type": "crane",
+   "work_days": "1111100",
+   "holidays": [
+    "2026-07-20"
+   ]
+  },
+  {
+   "resource_type": "manpower",
+   "work_days": "1111110",
+   "holidays": []
+  }
+ ]
+}
