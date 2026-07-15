@@ -254,6 +254,14 @@ export const I18N = {
     overAllocated: '超額分配',
     peakDemand: '尖峰需求',
     week: '週',
+    weekLegend: '欄位為 ISO 年週(例:W10 = 該年第 10 週);數值為該週的尖峰單日需求,紅色 = 超過產能',
+    // ---- 儀表板彙總卡片(DashboardView 直接以 totals 的欄位名當 i18n 鍵) ----
+    project_count: '專案數',
+    task_count: '任務總數',
+    critical_count: '要徑任務數',
+    baseline_count: '已建基準線專案',
+    pending_risk_events: '待處理風險事件',
+    at_risk_count: '落後/超支專案',
     unscheduledProjects: '未排定專案',
     addResource: '新增資源',
     // ---- Pro Batch E · Feature 2：每資源行事曆假日例外 ----
@@ -518,6 +526,14 @@ export const I18N = {
     overAllocated: '超额分配',
     peakDemand: '峰值需求',
     week: '周',
+    weekLegend: '栏位为 ISO 年周(例:W10 = 该年第 10 周);数值为该周的尖峰单日需求,红色 = 超过产能',
+    // ---- 仪表板汇总卡片(DashboardView 直接以 totals 的字段名当 i18n 键) ----
+    project_count: '项目数',
+    task_count: '任务总数',
+    critical_count: '关键任务数',
+    baseline_count: '已建基准线项目',
+    pending_risk_events: '待处理风险事件',
+    at_risk_count: '落后/超支项目',
     unscheduledProjects: '未排期项目',
     addResource: '新增资源',
     // ---- Pro Batch E · Feature 2：每资源日历假日例外 ----

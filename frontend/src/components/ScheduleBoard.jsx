@@ -114,6 +114,7 @@ export default function ScheduleBoard() {
     importProject,
     clearImportReport,
     loadTaskPhotos,
+    uploadTaskPhoto,
     deleteTaskPhoto,
     qrUrl,
   } = store;
@@ -161,6 +162,8 @@ export default function ScheduleBoard() {
   const [importReportDismissed, setImportReportDismissed] = useState(false);
   // Pro Batch C：照片燈箱開啟中的目標任務 task_id（null = 關閉）
   const [photoLightbox, setPhotoLightbox] = useState(null);
+  // 燈箱內「上傳照片」的隱藏檔案輸入框(桌面版直接上傳,不必進現場模式)
+  const photoUploadInputRef = useRef(null);
 
   // 掛載時載入專案清單
   useEffect(() => {
@@ -509,6 +512,20 @@ export default function ScheduleBoard() {
   const handleOpenPhotos = (taskId) => {
     setPhotoLightbox(taskId);
     loadTaskPhotos(taskId).catch(() => {});
+  };
+
+  // 燈箱內直接上傳照片(editor+):選檔即上傳,成功後 store 會把新照片附加到
+  // photosByTask[taskId],燈箱即時刷新;失敗訊息存於 errors.photos(燈箱內顯示)。
+  const handleLightboxUpload = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file || !photoLightbox) return;
+    try {
+      await uploadTaskPhoto(photoLightbox, file);
+    } catch (err) {
+      /* 錯誤已存於 errors.photos */
+    } finally {
+      e.target.value = '';
+    }
   };
 
   // 刪除燈箱內某張照片（editor+；store.deleteTaskPhoto 已限制角色，403 由 errors.photos 顯示）
@@ -1057,8 +1074,32 @@ export default function ScheduleBoard() {
                   />
                 ))}
               </div>
+              {getError(store, 'photos') && (
+                <div className="notice error" style={{ marginTop: '8px' }}>
+                  {t(region, 'error')}: {String(getError(store, 'photos'))}
+                </div>
+              )}
             </div>
             <div className="cpm-modal-footer">
+              {/* 桌面版也可直接上傳(原本僅現場模式可傳;回應「照片要怎麼上傳」) */}
+              {canWrite && (
+                <>
+                  <input
+                    ref={photoUploadInputRef}
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={handleLightboxUpload}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => photoUploadInputRef.current && photoUploadInputRef.current.click()}
+                    disabled={isLoading(store, 'photos')}
+                  >
+                    📷 {t(region, 'uploadPhoto')}
+                  </button>
+                </>
+              )}
               <button type="button" className="secondary" onClick={() => setPhotoLightbox(null)}>
                 {t(region, 'dismiss')}
               </button>

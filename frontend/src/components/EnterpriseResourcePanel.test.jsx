@@ -89,9 +89,11 @@ describe('EnterpriseResourcePanel render smoke test', () => {
       }),
     );
     const { getByText, container } = render(<EnterpriseResourcePanel region="TW" />);
-    // week column header (short form, year prefix stripped)
-    expect(getByText('W01')).toBeInTheDocument();
-    expect(getByText('W02')).toBeInTheDocument();
+    // week column header (human form 「第 N 週」; full ISO label kept in title attr)
+    const w1 = getByText('第 1 週');
+    expect(w1).toBeInTheDocument();
+    expect(w1.getAttribute('title')).toBe('2026-W01');
+    expect(getByText('第 2 週')).toBeInTheDocument();
     // resource row label + peak/capacity
     expect(getByText('Tower Crane')).toBeInTheDocument();
     // over-allocated cell renders the demand value and carries a red-tinted background

@@ -294,11 +294,22 @@ export default function EnterpriseResourcePanel({ region = 'TW' }) {
                 <th style={cellHead}>{t(region, 'resources')}</th>
                 <th style={cellHead}>{t(region, 'capacity')}</th>
                 <th style={cellHead}>{t(region, 'peakDemand')}</th>
-                {weeks.map((w) => (
-                  <th key={`week-h-${w}`} style={{ ...cellHead, textAlign: 'center' }}>
-                    {w.replace(/^\d{4}-/, '')}
-                  </th>
-                ))}
+                {weeks.map((w) => {
+                  // ISO 年週標籤 "2026-W10" -> 「第 10 週」;完整標籤放 title 供查對。
+                  const m = /^(\d{4})-W(\d+)$/.exec(w);
+                  const label = m
+                    ? `第 ${parseInt(m[2], 10)} ${t(region, 'week')}`
+                    : w.replace(/^\d{4}-/, '');
+                  return (
+                    <th
+                      key={`week-h-${w}`}
+                      style={{ ...cellHead, textAlign: 'center', whiteSpace: 'nowrap' }}
+                      title={w}
+                    >
+                      {label}
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
@@ -343,6 +354,12 @@ export default function EnterpriseResourcePanel({ region = 'TW' }) {
             </tbody>
           </table>
         </div>
+        {/* 週欄位說明(回應「W10/W11 是什麼」的現場疑問) */}
+        {weeks.length > 0 && (
+          <div style={{ fontSize: '11px', color: '#8a93a0', marginBottom: '12px' }}>
+            ⓘ {t(region, 'weekLegend')}
+          </div>
+        )}
 
         {unscheduled.length > 0 && (
           <div style={{ fontSize: '12px', color: '#b9770e', marginBottom: '6px' }}>
