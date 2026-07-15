@@ -1,0 +1,12 @@
+# 二進位檔一律不做任何 EOL 轉換 (git 曾將 demo-assets 的 PDF 誤判為文字檔,
+# CRLF 正規化會毀損二進位內容;此處明確宣告杜絕風險)。
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.xlsx binary
+*.zip  binary
+*.woff binary
+*.woff2 binary
